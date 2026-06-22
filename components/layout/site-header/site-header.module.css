@@ -1,0 +1,61 @@
+@reference "../../../app/globals.css";
+
+.header {
+  @apply sticky top-0 z-50 w-full border-b border-border/60 bg-background/80 backdrop-blur-md supports-[backdrop-filter]:bg-background/60;
+}
+
+.inner {
+  @apply flex h-16 items-center justify-between gap-6;
+}
+
+.logo {
+  @apply flex items-center gap-2.5;
+}
+
+.logoMark {
+  @apply flex size-8 items-center justify-center rounded-md bg-primary text-xs font-bold tracking-tight text-primary-foreground;
+}
+
+.logoText {
+  @apply text-base font-semibold tracking-tight;
+}
+
+.desktopNav {
+  @apply hidden md:flex;
+}
+
+.desktopNavList {
+  @apply gap-1;
+}
+
+.desktopNavLink {
+  @apply px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground;
+}
+
+.desktopActions {
+  @apply hidden items-center gap-2 md:flex;
+}
+
+.mobileCluster {
+  @apply flex items-center gap-1 md:hidden;
+}
+
+.mobileContent {
+  @apply w-full max-w-xs gap-0 p-0;
+}
+
+.mobileHeader {
+  @apply flex-row items-center justify-between border-b border-border/60 px-4 py-4;
+}
+
+.mobileNav {
+  @apply flex flex-col px-2 py-4;
+}
+
+.mobileNavLink {
+  @apply rounded-md px-4 py-3 text-base font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground;
+}
+
+.mobileActions {
+  @apply mt-auto flex flex-col gap-2 border-t border-border/60 p-4;
+}

@@ -1,0 +1,69 @@
+@reference "../../../app/globals.css";
+
+.footer {
+  @apply border-t border-border/60 bg-muted/30;
+}
+
+.inner {
+  @apply py-14;
+}
+
+.grid {
+  @apply grid grid-cols-2 gap-8 md:grid-cols-6;
+}
+
+.brand {
+  @apply col-span-2 md:col-span-3;
+}
+
+.logo {
+  @apply flex items-center gap-2.5;
+}
+
+.logoMark {
+  @apply flex size-8 items-center justify-center rounded-md bg-primary text-xs font-bold tracking-tight text-primary-foreground;
+}
+
+.logoText {
+  @apply text-base font-semibold tracking-tight;
+}
+
+.tagline {
+  @apply mt-4 max-w-sm text-sm leading-relaxed text-muted-foreground;
+}
+
+.brandCta {
+  @apply mt-6;
+}
+
+.columnTitle {
+  @apply text-sm font-semibold text-foreground;
+}
+
+.columnList {
+  @apply mt-4 space-y-3;
+}
+
+.columnLink {
+  @apply text-sm text-muted-foreground transition-colors hover:text-foreground;
+}
+
+.separator {
+  @apply my-10;
+}
+
+.bottomBar {
+  @apply flex flex-col items-center justify-between gap-4 sm:flex-row;
+}
+
+.copyright {
+  @apply text-sm text-muted-foreground;
+}
+
+.socials {
+  @apply flex items-center gap-1;
+}
+
+.socialIcon {
+  @apply size-4;
+}
