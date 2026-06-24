@@ -1,7 +1,7 @@
 @reference "../../../app/globals.css";
 
 .footer {
-  @apply border-t border-border/60 bg-muted/30;
+  @apply border-border/60 bg-muted/30 border-t;
 }
 
 .inner {
@@ -21,7 +21,7 @@
 }
 
 .logoMark {
-  @apply flex size-8 items-center justify-center rounded-md bg-primary text-xs font-bold tracking-tight text-primary-foreground;
+  @apply bg-primary text-primary-foreground flex size-8 items-center justify-center rounded-md text-xs font-bold tracking-tight;
 }
 
 .logoText {
@@ -29,7 +29,7 @@
 }
 
 .tagline {
-  @apply mt-4 max-w-sm text-sm leading-relaxed text-muted-foreground;
+  @apply text-muted-foreground mt-4 max-w-sm text-sm leading-relaxed;
 }
 
 .brandCta {
@@ -37,7 +37,7 @@
 }
 
 .columnTitle {
-  @apply text-sm font-semibold text-foreground;
+  @apply text-foreground text-sm font-semibold;
 }
 
 .columnList {
@@ -45,7 +45,7 @@
 }
 
 .columnLink {
-  @apply text-sm text-muted-foreground transition-colors hover:text-foreground;
+  @apply text-muted-foreground hover:text-foreground text-sm transition-colors;
 }
 
 .separator {
@@ -57,7 +57,7 @@
 }
 
 .copyright {
-  @apply text-sm text-muted-foreground;
+  @apply text-muted-foreground text-sm;
 }
 
 .socials {

@@ -79,43 +79,43 @@ export function SiteHeader() {
         <div className={styles.mobileCluster}>
           <ThemeToggle />
           <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
-          <SheetTrigger asChild>
-            <Button variant="outline" size="icon" aria-label="Open menu">
-              <ListIcon weight="bold" />
-            </Button>
-          </SheetTrigger>
-          <SheetContent side="right" className={styles.mobileContent}>
-            <SheetHeader className={styles.mobileHeader}>
-              <SheetTitle asChild>
-                <Logo />
-              </SheetTitle>
-            </SheetHeader>
-            <nav className={styles.mobileNav}>
-              {navLinks.map((link) => (
-                <Link
-                  key={link.href}
-                  href={link.href}
-                  onClick={() => setMobileOpen(false)}
-                  className={styles.mobileNavLink}
-                >
-                  {link.label}
-                </Link>
-              ))}
-            </nav>
-            <div className={styles.mobileActions}>
-              <Button variant="outline" size="lg" asChild>
-                <a
-                  href={GITHUB_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={() => setMobileOpen(false)}
-                >
-                  <GithubLogoIcon weight="fill" data-icon="inline-start" />
-                  GitHub
-                </a>
+            <SheetTrigger asChild>
+              <Button variant="outline" size="icon" aria-label="Open menu">
+                <ListIcon weight="bold" />
               </Button>
-            </div>
-          </SheetContent>
+            </SheetTrigger>
+            <SheetContent side="right" className={styles.mobileContent}>
+              <SheetHeader className={styles.mobileHeader}>
+                <SheetTitle asChild>
+                  <Logo />
+                </SheetTitle>
+              </SheetHeader>
+              <nav className={styles.mobileNav}>
+                {navLinks.map((link) => (
+                  <Link
+                    key={link.href}
+                    href={link.href}
+                    onClick={() => setMobileOpen(false)}
+                    className={styles.mobileNavLink}
+                  >
+                    {link.label}
+                  </Link>
+                ))}
+              </nav>
+              <div className={styles.mobileActions}>
+                <Button variant="outline" size="lg" asChild>
+                  <a
+                    href={GITHUB_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={() => setMobileOpen(false)}
+                  >
+                    <GithubLogoIcon weight="fill" data-icon="inline-start" />
+                    GitHub
+                  </a>
+                </Button>
+              </div>
+            </SheetContent>
           </Sheet>
         </div>
       </Container>

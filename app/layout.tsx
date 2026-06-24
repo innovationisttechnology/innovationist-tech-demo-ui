@@ -6,9 +6,15 @@ import { SiteHeader } from "@/components/layout/site-header/site-header";
 import { SiteFooter } from "@/components/layout/site-footer/site-footer";
 import { ThemeProvider } from "@/components/layout/theme-provider/theme-provider";
 
-const robotoHeading = Roboto({subsets:['latin'],variable:'--font-heading'});
+const robotoHeading = Roboto({
+  subsets: ["latin"],
+  variable: "--font-heading",
+});
 
-const jetbrainsMono = JetBrains_Mono({subsets:['latin'],variable:'--font-mono'});
+const jetbrainsMono = JetBrains_Mono({
+  subsets: ["latin"],
+  variable: "--font-mono",
+});
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -34,9 +40,17 @@ export default function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={cn("h-full", "antialiased", geistSans.variable, geistMono.variable, "font-mono", jetbrainsMono.variable, robotoHeading.variable)}
+      className={cn(
+        "h-full",
+        "antialiased",
+        geistSans.variable,
+        geistMono.variable,
+        "font-mono",
+        jetbrainsMono.variable,
+        robotoHeading.variable,
+      )}
     >
-      <body className="min-h-full flex flex-col">
+      <body className="flex min-h-full flex-col">
         <ThemeProvider
           attribute="class"
           defaultTheme="system"
