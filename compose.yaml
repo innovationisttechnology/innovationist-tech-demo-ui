@@ -1,0 +1,11 @@
+services:
+  server:
+    container_name: innovationist-demo-ui
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: production
+    ports:
+      - "3001:3001"
+    restart: unless-stopped
