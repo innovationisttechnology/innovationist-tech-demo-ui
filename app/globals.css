@@ -4,6 +4,16 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/*
+ * Fallbacks for the font CSS variables that next/font injects onto <html>
+ */
+html {
+  --font-geist-sans: ui-sans-serif, system-ui, sans-serif;
+  --font-geist-mono: ui-monospace, monospace;
+  --font-mono: ui-monospace, monospace;
+  --font-heading: ui-sans-serif, system-ui, sans-serif;
+}
+
 @theme inline {
   --container-site: 86rem;
   --color-background: var(--background);

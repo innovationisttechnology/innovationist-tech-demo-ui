@@ -1,7 +1,7 @@
 @reference "../../../app/globals.css";
 
 .header {
-  @apply sticky top-0 z-50 w-full border-b border-border/60 bg-background/80 backdrop-blur-md supports-[backdrop-filter]:bg-background/60;
+  @apply border-border/60 bg-background/80 supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50 w-full border-b backdrop-blur-md;
 }
 
 .inner {
@@ -13,7 +13,7 @@
 }
 
 .logoMark {
-  @apply flex size-8 items-center justify-center rounded-md bg-primary text-xs font-bold tracking-tight text-primary-foreground;
+  @apply bg-primary text-primary-foreground flex size-8 items-center justify-center rounded-md text-xs font-bold tracking-tight;
 }
 
 .logoText {
@@ -29,7 +29,7 @@
 }
 
 .desktopNavLink {
-  @apply px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground;
+  @apply text-muted-foreground hover:text-foreground px-3 py-2 text-sm font-medium transition-colors;
 }
 
 .desktopActions {
@@ -45,7 +45,7 @@
 }
 
 .mobileHeader {
-  @apply flex-row items-center justify-between border-b border-border/60 px-4 py-4;
+  @apply border-border/60 flex-row items-center justify-between border-b px-4 py-4;
 }
 
 .mobileNav {
@@ -53,9 +53,9 @@
 }
 
 .mobileNavLink {
-  @apply rounded-md px-4 py-3 text-base font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground;
+  @apply text-muted-foreground hover:bg-muted hover:text-foreground rounded-md px-4 py-3 text-base font-medium transition-colors;
 }
 
 .mobileActions {
-  @apply mt-auto flex flex-col gap-2 border-t border-border/60 p-4;
+  @apply border-border/60 mt-auto flex flex-col gap-2 border-t p-4;
 }

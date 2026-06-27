@@ -7,13 +7,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-npm run dev      # Start dev server at http://localhost:3001
-npm run build    # Production build
-npm run start    # Start production server at http://localhost:3001
-npm run lint     # Run ESLint
+npm run dev            # Start dev server at http://localhost:3001
+npm run build          # Production build
+npm run start          # Start production server at http://localhost:3001
+npm run lint           # Run ESLint
+npm test               # Run Vitest in watch mode
+npm run test:run       # Run the test suite once
+npm run test:coverage  # Run the test suite with a coverage report
 ```
 
-There is no test runner configured.
+Tests use **Vitest** with **@testing-library/react** in a **jsdom** environment.
+Config lives in `vitest.config.ts`, with global setup in `vitest.setup.ts` (jest-dom
+matchers, React cleanup, and a `next/navigation` mock). Test files are colocated with
+the components they cover (e.g. `components/layout/container/container.test.tsx`).
 
 ## Architecture
 

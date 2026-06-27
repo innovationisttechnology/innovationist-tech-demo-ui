@@ -43,7 +43,11 @@ const footerNav = [
 ] as const;
 
 const socials = [
-  { label: "GitHub", href: "https://github.com/innovationisttechnology", Icon: GithubLogoIcon },
+  {
+    label: "GitHub",
+    href: "https://github.com/innovationisttechnology",
+    Icon: GithubLogoIcon,
+  },
   { label: "LinkedIn", href: "https://linkedin.com", Icon: LinkedinLogoIcon },
   { label: "X", href: "https://x.com", Icon: XLogoIcon },
 ] as const;
@@ -60,9 +64,9 @@ export function SiteFooter() {
               <span className={styles.logoText}>InnovationistTech Demos</span>
             </Link>
             <p className={styles.tagline}>
-              We design and build modern web platforms and AI products —
-              from streaming assistants to real-time dashboards — shipped
-              with production discipline.
+              We design and build modern web platforms and AI products — from
+              streaming assistants to real-time dashboards — shipped with
+              production discipline.
             </p>
             <Button className={styles.brandCta} size="lg" asChild>
               <Link href="/contact">

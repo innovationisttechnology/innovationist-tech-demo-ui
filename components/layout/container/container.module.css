@@ -1,5 +1,5 @@
 @reference "../../../app/globals.css";
 
 .container {
-  @apply mx-auto w-full max-w-site px-4 md:px-8;
+  @apply max-w-site mx-auto w-full px-4 md:px-8;
 }
