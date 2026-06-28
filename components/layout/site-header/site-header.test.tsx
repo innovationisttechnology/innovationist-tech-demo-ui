@@ -18,24 +18,24 @@ describe("SiteHeader", () => {
     expect(logoLinks[0]).toHaveAttribute("href", "/");
   });
 
-  it("renders the desktop navigation links", () => {
+  it("links the desktop navigation out to the main company site", () => {
     render(<SiteHeader />);
 
     expect(screen.getByRole("link", { name: "Services" })).toHaveAttribute(
       "href",
-      "/services",
-    );
-    expect(screen.getByRole("link", { name: "Work" })).toHaveAttribute(
-      "href",
-      "/work",
+      "https://innovationisttech.com/#our-services",
     );
     expect(screen.getByRole("link", { name: "About" })).toHaveAttribute(
       "href",
-      "/about",
+      "https://innovationisttech.com/#about-us",
     );
     expect(screen.getByRole("link", { name: "Blog" })).toHaveAttribute(
       "href",
-      "/blog",
+      "https://innovationisttech.com/blog",
+    );
+    expect(screen.getByRole("link", { name: "Contact" })).toHaveAttribute(
+      "href",
+      "https://innovationisttech.com/contact-us",
     );
   });
 

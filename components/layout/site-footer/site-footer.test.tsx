@@ -8,34 +8,52 @@ describe("SiteFooter", () => {
     render(<SiteFooter />);
 
     expect(screen.getByText("InnovationistTech Demos")).toBeInTheDocument();
-    expect(
-      screen.getByRole("link", { name: /start a project/i }),
-    ).toHaveAttribute("href", "/contact");
+    for (const cta of screen.getAllByRole("link", {
+      name: /let's build together/i,
+    })) {
+      expect(cta).toHaveAttribute(
+        "href",
+        "https://innovationisttech.com/contact-us/lets-build-together",
+      );
+    }
   });
 
   it("renders each navigation column heading", () => {
     render(<SiteFooter />);
 
-    for (const title of ["Services", "Company", "Resources"]) {
+    for (const title of ["Services", "Company", "Get Started"]) {
       expect(screen.getByRole("heading", { name: title })).toBeInTheDocument();
     }
   });
 
-  it("renders navigation links with the correct hrefs", () => {
+  it("links marketing pages out to the main company site", () => {
     render(<SiteFooter />);
 
-    expect(screen.getByRole("link", { name: "AI & LLM Apps" })).toHaveAttribute(
-      "href",
-      "/services/ai",
-    );
     expect(screen.getByRole("link", { name: "About" })).toHaveAttribute(
       "href",
-      "/about",
+      "https://innovationisttech.com/#about-us",
     );
-    expect(screen.getByRole("link", { name: "Case Studies" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Blog" })).toHaveAttribute(
       "href",
-      "/work",
+      "https://innovationisttech.com/blog",
     );
+    expect(
+      screen.getByRole("link", { name: "Schedule a Call" }),
+    ).toHaveAttribute(
+      "href",
+      "https://innovationisttech.com/contact-us/schedule-a-call",
+    );
+  });
+
+  it("renders the real contact details", () => {
+    render(<SiteFooter />);
+
+    expect(
+      screen.getByRole("link", { name: "inquiries@innovationisttech.com" }),
+    ).toHaveAttribute("href", "mailto:inquiries@innovationisttech.com");
+    expect(
+      screen.getByRole("link", { name: "+1 (943) 267 4613" }),
+    ).toHaveAttribute("href", "tel:+19432674613");
   });
 
   it("renders social links that open in a new tab", () => {

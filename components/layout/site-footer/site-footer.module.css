@@ -36,6 +36,10 @@
   @apply mt-6;
 }
 
+.contactList {
+  @apply mt-6 space-y-2;
+}
+
 .columnTitle {
   @apply text-foreground text-sm font-semibold;
 }

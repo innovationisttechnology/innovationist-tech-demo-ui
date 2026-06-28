@@ -23,11 +23,15 @@ import {
 
 import styles from "./site-header.module.css";
 
+const COMPANY_SITE = "https://innovationisttech.com";
+
+// Marketing pages live on the main company site — the demo links out to them
+// rather than maintaining duplicate routes.
 const navLinks = [
-  { label: "Services", href: "/services" },
-  { label: "Work", href: "/work" },
-  { label: "About", href: "/about" },
-  { label: "Blog", href: "/blog" },
+  { label: "Services", href: `${COMPANY_SITE}/#our-services` },
+  { label: "About", href: `${COMPANY_SITE}/#about-us` },
+  { label: "Blog", href: `${COMPANY_SITE}/blog` },
+  { label: "Contact", href: `${COMPANY_SITE}/contact-us` },
 ] as const;
 
 const GITHUB_URL = "https://github.com/innovationisttechnology";
@@ -55,9 +59,9 @@ export function SiteHeader() {
             {navLinks.map((link) => (
               <NavigationMenuItem key={link.href}>
                 <NavigationMenuLink asChild>
-                  <Link href={link.href} className={styles.desktopNavLink}>
+                  <a href={link.href} className={styles.desktopNavLink}>
                     {link.label}
-                  </Link>
+                  </a>
                 </NavigationMenuLink>
               </NavigationMenuItem>
             ))}
@@ -92,14 +96,14 @@ export function SiteHeader() {
               </SheetHeader>
               <nav className={styles.mobileNav}>
                 {navLinks.map((link) => (
-                  <Link
+                  <a
                     key={link.href}
                     href={link.href}
                     onClick={() => setMobileOpen(false)}
                     className={styles.mobileNavLink}
                   >
                     {link.label}
-                  </Link>
+                  </a>
                 ))}
               </nav>
               <div className={styles.mobileActions}>
