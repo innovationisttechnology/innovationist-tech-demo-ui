@@ -67,7 +67,6 @@ export function SiteFooter() {
     <footer className={styles.footer}>
       <Container className={styles.inner}>
         <div className={styles.grid}>
-          {/* Brand + CTA */}
           <div className={styles.brand}>
             <Link href="/" className={styles.logo}>
               <span className={styles.logoMark}>IT</span>
@@ -99,7 +98,6 @@ export function SiteFooter() {
             </ul>
           </div>
 
-          {/* Link columns */}
           {footerNav.map((column) => (
             <div key={column.title}>
               <h3 className={styles.columnTitle}>{column.title}</h3>
