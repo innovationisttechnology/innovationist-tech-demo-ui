@@ -53,7 +53,6 @@ export function SiteHeader() {
       <Container className={styles.inner}>
         <Logo />
 
-        {/* Desktop navigation */}
         <NavigationMenu className={styles.desktopNav}>
           <NavigationMenuList className={styles.desktopNavList}>
             {navLinks.map((link) => (
@@ -68,7 +67,6 @@ export function SiteHeader() {
           </NavigationMenuList>
         </NavigationMenu>
 
-        {/* Desktop actions */}
         <div className={styles.desktopActions}>
           <ThemeToggle />
           <Button variant="outline" size="lg" asChild>
@@ -79,7 +77,6 @@ export function SiteHeader() {
           </Button>
         </div>
 
-        {/* Mobile menu */}
         <div className={styles.mobileCluster}>
           <ThemeToggle />
           <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>

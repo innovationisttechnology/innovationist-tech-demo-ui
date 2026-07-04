@@ -103,7 +103,6 @@ export function DemoCard({
           active={trailActive}
         />
 
-        {/* Ghosted index watermark */}
         <span
           aria-hidden
           className="font-heading text-primary/[0.08] pointer-events-none absolute -top-8 right-1 text-[9rem] leading-none font-bold select-none"
@@ -111,13 +110,11 @@ export function DemoCard({
           {String(index + 1).padStart(2, "0")}
         </span>
 
-        {/* Animated top accent */}
         <span
           aria-hidden
           className="from-primary absolute inset-x-0 top-0 h-px origin-left scale-x-0 bg-gradient-to-r to-transparent transition-transform duration-500 group-hover:scale-x-100"
         />
 
-        {/* Corner glow on hover */}
         <span
           aria-hidden
           className="bg-primary/10 pointer-events-none absolute -right-16 -bottom-16 size-40 rounded-full opacity-0 blur-2xl transition-opacity duration-500 group-hover:opacity-100"

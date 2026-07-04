@@ -1,15 +1,15 @@
-import { BroadcastIcon, RobotIcon } from "@phosphor-icons/react";
+import { BroadcastIcon, RobotIcon } from "@phosphor-icons/react/dist/ssr";
 
 import { type Demo } from "@/components/demos/demo-card/demo-card";
 
 export const DEMOS: readonly Demo[] = [
   {
-    eyebrow: "Feature Flags · SSE",
-    title: "Real-time Feature Flags",
+    eyebrow: "Content Sync · SSE",
+    title: "Content & Feature Sync",
     description:
-      "Toggle a flag in the dashboard and watch every connected client update instantly over Server-Sent Events — no redeploys, no polling.",
+      "Flip a feature or content value in the dashboard and watch every connected client update instantly over Server-Sent Events — no redeploys, no polling.",
     techStack: ["Python", "MongoDB", "SSE"],
-    href: "/demos/feature-flags",
+    href: "/demos/content-sync",
     icon: BroadcastIcon,
   },
   {
@@ -22,3 +22,7 @@ export const DEMOS: readonly Demo[] = [
     icon: RobotIcon,
   },
 ];
+
+export function getDemoByHref(href: string): Demo | undefined {
+  return DEMOS.find((demo) => demo.href === href);
+}
