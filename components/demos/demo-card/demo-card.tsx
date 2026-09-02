@@ -1,18 +1,8 @@
-"use client";
-
-import { useRef, useState, type MouseEvent } from "react";
 import Link from "next/link";
-import { ArrowRightIcon, GithubLogoIcon } from "@phosphor-icons/react";
+import { ArrowRightIcon } from "@phosphor-icons/react/dist/ssr";
 import type { Icon } from "@phosphor-icons/react";
-import {
-  motion,
-  useMotionValue,
-  useAnimationControls,
-  useReducedMotion,
-} from "motion/react";
 
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -21,9 +11,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { CursorTrail } from "@/components/demos/demo-card/cursor-trail";
-import { CursorRipples } from "@/components/demos/demo-card/cursor-ripples";
-import { CardRippleBackground } from "@/components/demos/demo-card/card-ripple-background";
+import { buttonVariants } from "@/components/ui/button";
 
 export type Demo = {
   eyebrow: string;
@@ -31,149 +19,92 @@ export type Demo = {
   description: string;
   techStack: readonly string[];
   href: string;
-  sourceUrl?: string;
   icon: Icon;
 };
 
+/**
+ * The whole card is one anchor, with the card nested inside it.
+ *
+ * The previous version kept the anchor in the footer and stretched it over the
+ * card with an `after:inset-0` overlay. That broke: on mousedown the overlay
+ * stopped covering the card, so mouseup landed on the card body instead, and
+ * the browser dispatched `click` on their common ancestor rather than the link.
+ * The visible button still worked, so the card looked selectively dead.
+ *
+ * Wrapping instead of overlaying means hit-testing is plain box containment —
+ * nothing to collapse, and the focus ring lands on the real target for free.
+ * The trade-off is that no other interactive element can live inside the card,
+ * since a nested anchor or button would be invalid HTML.
+ */
 export function DemoCard({
   eyebrow,
   title,
   description,
   techStack,
   href,
-  sourceUrl,
   icon: PreviewIcon,
   index,
 }: Demo & { index: number }) {
-  const prefersReducedMotion = useReducedMotion();
-  const wrapperRef = useRef<HTMLDivElement>(null);
-  const pointerX = useMotionValue(-100);
-  const pointerY = useMotionValue(-100);
-  const vibrateControls = useAnimationControls();
-  const hasVibrated = useRef(false);
-  const [trailActive, setTrailActive] = useState(false);
-
-  function handlePointerEnter() {
-    setTrailActive(true);
-
-    if (prefersReducedMotion || hasVibrated.current) {
-      return;
-    }
-
-    hasVibrated.current = true;
-    vibrateControls.start({
-      x: [0, -5, 5, -4, 4, -2, 2, 0],
-      transition: { duration: 0.45, ease: "easeInOut" },
-    });
-  }
-
-  function handlePointerMove(event: MouseEvent<HTMLDivElement>) {
-    const bounds = wrapperRef.current?.getBoundingClientRect();
-    if (!bounds) {
-      return;
-    }
-
-    pointerX.set(event.clientX - bounds.left);
-    pointerY.set(event.clientY - bounds.top);
-  }
-
-  function handlePointerLeave() {
-    setTrailActive(false);
-  }
-
   return (
-    <motion.div
-      ref={wrapperRef}
-      animate={vibrateControls}
-      onMouseEnter={handlePointerEnter}
-      onMouseMove={handlePointerMove}
-      onMouseLeave={handlePointerLeave}
-      className="h-full"
+    <Link
+      href={href}
+      className="group focus-visible:ring-ring/50 focus-visible:ring-offset-background block h-full rounded-xl focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
     >
-      <Card className="group hover:ring-primary/30 relative isolate h-full min-h-96 overflow-hidden transition-all duration-300 [--card-spacing:--spacing(12)] hover:-translate-y-1 hover:shadow-xl">
-        <CardRippleBackground />
-        <CursorTrail
-          pointerX={pointerX}
-          pointerY={pointerY}
-          active={trailActive}
-        />
-        <CursorRipples
-          pointerX={pointerX}
-          pointerY={pointerY}
-          active={trailActive}
-        />
-
+      <Card className="hover:border-primary/40 relative flex h-full flex-col overflow-hidden transition-colors [--card-spacing:--spacing(8)]">
+        {/* Always on rather than a hover reveal — the card should read as a
+            live thing at rest, not reward pointing at it. */}
         <span
           aria-hidden
-          className="font-heading text-primary/[0.08] pointer-events-none absolute -top-8 right-1 text-[9rem] leading-none font-bold select-none"
-        >
-          {String(index + 1).padStart(2, "0")}
-        </span>
-
-        <span
-          aria-hidden
-          className="from-primary absolute inset-x-0 top-0 h-px origin-left scale-x-0 bg-gradient-to-r to-transparent transition-transform duration-500 group-hover:scale-x-100"
-        />
-
-        <span
-          aria-hidden
-          className="bg-primary/10 pointer-events-none absolute -right-16 -bottom-16 size-40 rounded-full opacity-0 blur-2xl transition-opacity duration-500 group-hover:opacity-100"
+          className="from-primary/60 absolute inset-x-0 top-0 h-px bg-gradient-to-r to-transparent"
         />
 
         <CardHeader>
-          <div className="flex items-center gap-4">
-            <div className="border-border bg-muted/40 text-primary group-hover:border-primary/40 group-hover:bg-primary/10 flex size-12 shrink-0 items-center justify-center border transition-colors">
-              <PreviewIcon weight="duotone" className="size-6" />
-            </div>
-            <span className="text-muted-foreground flex items-center gap-2 text-[0.625rem] font-semibold tracking-widest uppercase">
-              <span className="bg-primary shadow-primary/50 size-1.5 rounded-full shadow-[0_0_8px_1px]" />
-              {eyebrow}
+          <div className="flex items-center justify-between gap-4">
+            <span className="border-border bg-muted/40 text-primary flex size-10 shrink-0 items-center justify-center rounded-md border">
+              <PreviewIcon weight="duotone" className="size-5" />
+            </span>
+            <span className="text-muted-foreground font-mono text-[0.625rem] tracking-widest tabular-nums">
+              {String(index + 1).padStart(2, "0")}
             </span>
           </div>
         </CardHeader>
 
-        <CardContent>
-          <CardTitle className="text-2xl">{title}</CardTitle>
-          <CardDescription className="mt-3">{description}</CardDescription>
+        <CardContent className="flex-1">
+          <p className="text-muted-foreground flex items-center gap-2 font-mono text-[0.625rem] tracking-widest uppercase">
+            <span className="bg-primary size-1.5 rounded-full" />
+            {eyebrow}
+          </p>
 
-          <ul className="mt-6 flex flex-wrap gap-2">
+          <CardTitle className="mt-3 text-2xl">
+            <h3>{title}</h3>
+          </CardTitle>
+
+          <CardDescription className="mt-2 leading-relaxed">
+            {description}
+          </CardDescription>
+
+          <ul className="mt-5 flex flex-wrap gap-1.5">
             {techStack.map((tech) => (
               <li key={tech}>
-                <Badge
-                  variant="secondary"
-                  className="border-border border px-2 py-0.5"
-                >
-                  {tech}
-                </Badge>
+                <Badge variant="secondary">{tech}</Badge>
               </li>
             ))}
           </ul>
         </CardContent>
 
-        <CardFooter className="mt-auto gap-2">
-          <Button asChild>
-            <Link
-              href={href}
-              className="after:absolute after:inset-0 after:content-['']"
-            >
-              View live demo
-              <ArrowRightIcon
-                weight="bold"
-                data-icon="inline-end"
-                className="transition-transform group-hover:translate-x-0.5"
-              />
-            </Link>
-          </Button>
-          {sourceUrl ? (
-            <Button variant="ghost" asChild className="relative z-10">
-              <a href={sourceUrl} target="_blank" rel="noopener noreferrer">
-                <GithubLogoIcon weight="fill" data-icon="inline-start" />
-                Source
-              </a>
-            </Button>
-          ) : null}
+        <CardFooter className="mt-auto">
+          {/* A span, not a Button: the anchor is the card wrapper, and nesting
+              another interactive element inside it would be invalid HTML. */}
+          <span className={buttonVariants({ variant: "default" })}>
+            View live demo
+            <ArrowRightIcon
+              weight="bold"
+              data-icon="inline-end"
+              className="transition-transform group-hover:translate-x-0.5"
+            />
+          </span>
         </CardFooter>
       </Card>
-    </motion.div>
+    </Link>
   );
 }
