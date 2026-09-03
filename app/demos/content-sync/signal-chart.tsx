@@ -238,7 +238,7 @@ export function SignalChart({ flags }: { flags: readonly SignalFlag[] }) {
                 x={scales.x(tick)}
                 y={innerHeight + 16}
                 textAnchor="middle"
-                className="fill-white/35 font-mono text-[9px]"
+                className="fill-muted-foreground font-mono text-[9px]"
               >
                 {tick}
               </text>
@@ -303,7 +303,7 @@ export function SignalChart({ flags }: { flags: readonly SignalFlag[] }) {
 
       {flags.length === 0 ? (
         <div className="text-muted-foreground absolute inset-0 flex items-center justify-center font-mono text-xs">
-          No active flags — add a word or enable one below.
+          Nothing switched on yet. Add a word or flip one below.
         </div>
       ) : null}
     </div>

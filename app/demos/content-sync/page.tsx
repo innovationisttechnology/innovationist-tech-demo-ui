@@ -7,7 +7,7 @@ import { ContentSyncDemo } from "./content-sync-demo";
 const demo = getDemoByHref("/demos/content-sync");
 
 export const metadata: Metadata = {
-  title: demo ? `${demo.title} — InnovationistTech Demos` : "Demo",
+  title: demo?.title ?? "Demo",
 };
 
 export default function ContentSyncDemoPage() {

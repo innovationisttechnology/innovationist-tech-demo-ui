@@ -7,7 +7,7 @@ export const DEMOS: readonly Demo[] = [
     eyebrow: "Content Sync · SSE",
     title: "Content & Feature Sync",
     description:
-      "Flip a feature or content value in the dashboard and watch every connected client update instantly over Server-Sent Events — no redeploys, no polling.",
+      "Change a flag here and every other open browser updates before you can switch tabs. No redeploy, no polling loop, just an open connection doing its job.",
     techStack: ["Python", "MongoDB", "SSE"],
     href: "/demos/content-sync",
     icon: BroadcastIcon,
@@ -16,8 +16,8 @@ export const DEMOS: readonly Demo[] = [
     eyebrow: "AI Chatbot · RAG",
     title: "AI Document Chatbot",
     description:
-      "Upload your documents and ask questions in natural language. Retrieval-augmented generation grounds answers in your content, with a fine-tuned model for tone.",
-    techStack: ["RAG", "LLM", "Fine-tuning"],
+      "Give it a document, a file, or a link, then ask about it. The panel on the right shows which passages it actually pulled, so you can tell when the answer is grounded and when it is guessing.",
+    techStack: ["RAG", "Vector Search", "Agent Tools"],
     href: "/demos/ai-chatbot",
     icon: RobotIcon,
   },

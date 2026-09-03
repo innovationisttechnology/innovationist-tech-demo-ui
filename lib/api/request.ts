@@ -16,12 +16,17 @@ export async function request<TSchema extends z.ZodTypeAny>(
   const { sessionId, headers, ...axiosOptions } = options;
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
 
+  // Multipart uploads must not carry a caller-set Content-Type: the browser
+  // has to write it itself so the boundary token matches the body it encodes.
+  const isMultipart =
+    typeof FormData !== "undefined" && axiosOptions.data instanceof FormData;
+
   const config: AxiosRequestConfig = {
     method: "GET",
     ...axiosOptions,
     url: `${API_BASE_URL}/api${normalizedPath}`,
     headers: {
-      "Content-Type": "application/json",
+      ...(isMultipart ? {} : { "Content-Type": "application/json" }),
       ...(sessionId ? { "X-Session-Id": sessionId } : {}),
       ...headers,
     },
