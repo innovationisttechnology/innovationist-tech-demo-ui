@@ -14,7 +14,7 @@ import {
 // schema and hands back domain objects.
 //
 // Chat itself is NOT here — it streams through the Next route handler at
-// `/api/ziza/stream`, which translates the backend SSE into the AI SDK
+// `/bff/ziza/stream`, which translates the backend SSE into the AI SDK
 // protocol so `useChat` can drive the UI. File upload deliberately does NOT go
 // through a route handler: posting straight to the API avoids buffering the
 // whole file through the Next server a second time.
@@ -143,7 +143,4 @@ export const clearKnowledge = async (
   return ok && data ? data.chunks_deleted : null;
 };
 
-// The chat stream is proxied through Next rather than hit directly, so the
-// browser never needs the backend origin and the SSE→AI-SDK translation has
-// one home.
-export const ZIZA_STREAM_ROUTE = "/api/ziza/stream";
+export const ZIZA_STREAM_ROUTE = "/bff/ziza/stream";

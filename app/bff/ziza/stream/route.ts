@@ -143,5 +143,11 @@ export async function POST(incomingRequest: Request) {
     onError: () => "The chat stream failed.",
   });
 
-  return createUIMessageStreamResponse({ stream });
+  return createUIMessageStreamResponse({
+    stream,
+    headers: {
+      "Cache-Control": "no-cache, no-transform",
+      "X-Accel-Buffering": "no",
+    },
+  });
 }
