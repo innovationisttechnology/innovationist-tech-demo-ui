@@ -80,7 +80,9 @@ jobs:
               --name "$CONTAINER" \
               --restart unless-stopped \
               -p 3001:3001 \
+              --add-host=host.docker.internal:host-gateway \
               -e NODE_ENV=production \
+              -e ZIZA_API_ORIGIN="http://host.docker.internal:8181" \
               "$IMAGE"
 
             # Wait for the container to report healthy/running; roll back is manual but
