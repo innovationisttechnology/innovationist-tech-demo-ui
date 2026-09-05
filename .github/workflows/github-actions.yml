@@ -44,6 +44,8 @@ jobs:
         with:
           context: .
           push: ${{ github.ref_name == 'main' }}
+          build-args: |
+            NEXT_PUBLIC_API_BASE_URL=${{ secrets.NEXT_PUBLIC_API_BASE_URL }}
           tags: |
             ${{ secrets.DOCKER_USERNAME }}/innovationist-tech-demo-ui:latest
             ${{ secrets.DOCKER_USERNAME }}/innovationist-tech-demo-ui:${{ github.sha }}

@@ -7,8 +7,10 @@ import {
   ZizaTextFrameSchema,
 } from "@/lib/ziza/ziza.schema";
 
-const API_ORIGIN =
-  process.env.ZIZA_API_ORIGIN ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
+// One public API address, used by the browser and by this handler alike.
+// Compiled in at build time rather than read at runtime, so it must be
+// supplied as a Docker build arg — `docker run -e` happens too late.
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 const TEXT_PART_ID = "text-0";
 
 /**
@@ -38,7 +40,7 @@ export async function POST(incomingRequest: Request) {
 
   let upstream: Response;
   try {
-    upstream = await fetch(`${API_ORIGIN}/api/ziza/chat/stream`, {
+    upstream = await fetch(`${API_BASE_URL}/api/ziza/chat/stream`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -48,9 +50,9 @@ export async function POST(incomingRequest: Request) {
       signal: incomingRequest.signal,
     });
   } catch (failure) {
-    const reason = API_ORIGIN
-      ? `Could not reach the demo API at ${API_ORIGIN}`
-      : "ZIZA_API_ORIGIN is not set, so there is no API address to call";
+    const reason = API_BASE_URL
+      ? `Could not reach the demo API at ${API_BASE_URL}`
+      : "NEXT_PUBLIC_API_BASE_URL was empty at build time, so there is no API address to call";
     console.error("ziza stream upstream failed:", reason, failure);
     return NextResponse.json({ message: reason }, { status: 503 });
   }
