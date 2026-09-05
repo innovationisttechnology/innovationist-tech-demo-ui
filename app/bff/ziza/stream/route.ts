@@ -7,7 +7,8 @@ import {
   ZizaTextFrameSchema,
 } from "@/lib/ziza/ziza.schema";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
+const API_ORIGIN =
+  process.env.ZIZA_API_ORIGIN ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 const TEXT_PART_ID = "text-0";
 
 /**
@@ -37,7 +38,7 @@ export async function POST(incomingRequest: Request) {
 
   let upstream: Response;
   try {
-    upstream = await fetch(`${API_BASE_URL}/api/ziza/chat/stream`, {
+    upstream = await fetch(`${API_ORIGIN}/api/ziza/chat/stream`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -46,11 +47,12 @@ export async function POST(incomingRequest: Request) {
       body: JSON.stringify(parsedBody.data),
       signal: incomingRequest.signal,
     });
-  } catch {
-    return NextResponse.json(
-      { message: "Could not reach the demo API" },
-      { status: 503 },
-    );
+  } catch (failure) {
+    const reason = API_ORIGIN
+      ? `Could not reach the demo API at ${API_ORIGIN}`
+      : "ZIZA_API_ORIGIN is not set, so there is no API address to call";
+    console.error("ziza stream upstream failed:", reason, failure);
+    return NextResponse.json({ message: reason }, { status: 503 });
   }
 
   if (!upstream.ok || !upstream.body) {
