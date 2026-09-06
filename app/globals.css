@@ -59,77 +59,76 @@ html {
 }
 
 :root {
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.148 0.004 228.8);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.148 0.004 228.8);
-  /* Slate ships no accent of its own — its `primary` is near-black. This is a
-     blue in slate's hue family, kept near the chroma of the teal it replaced so
-     the accent stays restrained. */
-  --primary: oklch(0.488 0.243 264.376);
-  --primary-foreground: oklch(0.97 0.014 254.604);
-  --secondary: oklch(0.967 0.001 286.375);
-  --secondary-foreground: oklch(0.21 0.006 285.885);
-  --muted: oklch(0.963 0.002 197.1);
-  --muted-foreground: oklch(0.56 0.021 213.5);
-  --accent: oklch(0.963 0.002 197.1);
-  --accent-foreground: oklch(0.218 0.008 223.9);
+  /* Mirrors the marketing site's light `--ui-*` tokens (app/(site)/site.css)
+     so both properties read as one brand. Update them together. */
+  --background: #f5f7fc;
+  --foreground: #181c31;
+  --card: #f8fafd;
+  --card-foreground: #181c31;
+  --popover: #f8fafd;
+  --popover-foreground: #181c31;
+  --primary: #006bff;
+  --primary-foreground: #ffffff;
+  --secondary: #edf5ff;
+  --secondary-foreground: #181c31;
+  --muted: #f0f3f9;
+  --muted-foreground: #757693;
+  --accent: #eef1f8;
+  --accent-foreground: #181c31;
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.925 0.005 214.3);
-  --input: oklch(0.925 0.005 214.3);
-  --ring: oklch(0.723 0.014 214.4);
+  --border: #e2e6f0;
+  --input: #e2e6f0;
+  --ring: rgb(0 107 255 / 35%);
   --chart-1: oklch(0.865 0.127 207.078);
   --chart-2: oklch(0.715 0.143 215.221);
   --chart-3: oklch(0.609 0.126 221.723);
   --chart-4: oklch(0.52 0.105 223.128);
   --chart-5: oklch(0.45 0.085 224.283);
   --radius: 0.625rem;
-  --sidebar: oklch(0.987 0.002 197.1);
-  --sidebar-foreground: oklch(0.148 0.004 228.8);
-  --sidebar-primary: oklch(0.546 0.245 262.881);
-  --sidebar-primary-foreground: oklch(0.97 0.014 254.604);
-  --sidebar-accent: oklch(0.963 0.002 197.1);
-  --sidebar-accent-foreground: oklch(0.218 0.008 223.9);
-  --sidebar-border: oklch(0.925 0.005 214.3);
-  --sidebar-ring: oklch(0.723 0.014 214.4);
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.148 0.004 228.8);
+  --sidebar: #f8fafd;
+  --sidebar-foreground: #181c31;
+  --sidebar-primary: #006bff;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #eef1f8;
+  --sidebar-accent-foreground: #181c31;
+  --sidebar-border: #e2e6f0;
+  --sidebar-ring: rgb(0 107 255 / 35%);
 }
 
 .dark {
-  --background: oklch(0.148 0.004 228.8);
-  --foreground: oklch(0.987 0.002 197.1);
-  --card: oklch(0.218 0.008 223.9);
-  --card-foreground: oklch(0.987 0.002 197.1);
-  --popover: oklch(0.218 0.008 223.9);
-  --popover-foreground: oklch(0.987 0.002 197.1);
-  /* Lighter than the light-mode accent so it separates from a dark background,
-     dark enough that white label text still passes. */
-  --primary: oklch(0.424 0.199 265.638);
-  --primary-foreground: oklch(0.97 0.014 254.604);
-  --secondary: oklch(0.274 0.006 286.033);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.275 0.011 216.9);
-  --muted-foreground: oklch(0.723 0.014 214.4);
-  --accent: oklch(0.275 0.011 216.9);
-  --accent-foreground: oklch(0.987 0.002 197.1);
+  /* Mirrors the marketing site's dark `--ui-*` tokens. The accent stays
+     #006bff across both themes — it is the brand colour, not a per-theme one. */
+  --background: #181c31;
+  --foreground: #ffffff;
+  --card: #1c2136;
+  --card-foreground: #ffffff;
+  --popover: #1c2136;
+  --popover-foreground: #ffffff;
+  --primary: #006bff;
+  --primary-foreground: #ffffff;
+  --secondary: #292e45;
+  --secondary-foreground: #ffffff;
+  --muted: #252a42;
+  --muted-foreground: #999aa1;
+  --accent: #252a42;
+  --accent-foreground: #ffffff;
   --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.56 0.021 213.5);
+  --border: #2d2f40;
+  --input: #2d2f40;
+  --ring: rgb(0 107 255 / 45%);
   --chart-1: oklch(0.865 0.127 207.078);
   --chart-2: oklch(0.715 0.143 215.221);
   --chart-3: oklch(0.609 0.126 221.723);
   --chart-4: oklch(0.52 0.105 223.128);
   --chart-5: oklch(0.45 0.085 224.283);
-  --sidebar: oklch(0.218 0.008 223.9);
-  --sidebar-foreground: oklch(0.987 0.002 197.1);
-  --sidebar-primary: oklch(0.623 0.214 259.815);
-  --sidebar-primary-foreground: oklch(0.97 0.014 254.604);
-  --sidebar-accent: oklch(0.275 0.011 216.9);
-  --sidebar-accent-foreground: oklch(0.987 0.002 197.1);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.56 0.021 213.5);
+  --sidebar: #1c2136;
+  --sidebar-foreground: #ffffff;
+  --sidebar-primary: #006bff;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #252a42;
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: #2d2f40;
+  --sidebar-ring: rgb(0 107 255 / 45%);
 }
 
 @layer base {
