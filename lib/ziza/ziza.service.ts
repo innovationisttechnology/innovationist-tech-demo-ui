@@ -1,11 +1,16 @@
+import { type z } from "zod";
+
 import { request } from "@/lib/api/request";
 
-import { toKnowledgeIngestResult } from "./ziza.mapper";
+import { toKnowledgeIngestResult, toPendingCall } from "./ziza.mapper";
 import {
   KnowledgeClearResponseSchema,
   KnowledgeIngestResponseSchema,
+  ZizaChatResponseSchema,
 } from "./ziza.schema";
 import {
+  type DeferralFailure,
+  type DeferralResult,
   type KnowledgeIngestFailure,
   type KnowledgeIngestResult,
 } from "./ziza.types";
@@ -50,26 +55,6 @@ export const SUPPORTED_UPLOAD_EXTENSIONS = [
 
 export const UPLOAD_ACCEPT_ATTRIBUTE = SUPPORTED_UPLOAD_EXTENSIONS.join(",");
 
-// Mirrors `KnowledgeUrlRequest.url` max_length in `app/ziza_chat/schemas.py`.
-export const MAX_URL_LENGTH = 2048;
-
-// Adds a text document to this session's knowledge base.
-export const ingestKnowledge = async (
-  sessionId: string,
-  source: string,
-  text: string,
-): Promise<KnowledgeIngestResult | null> => {
-  const { data, ok } = await request(
-    "/ziza/knowledge",
-    KnowledgeIngestResponseSchema,
-    {
-      method: "POST",
-      data: { session_id: sessionId, source, text },
-    },
-  );
-  return ok && data ? toKnowledgeIngestResult(data) : null;
-};
-
 function readErrorDetail(errorData: unknown): string | undefined {
   if (typeof errorData !== "object" || errorData === null) {
     return undefined;
@@ -79,7 +64,7 @@ function readErrorDetail(errorData: unknown): string | undefined {
 }
 
 // Uploads a file for extraction and ingestion. The source label is the
-// filename — unlike the JSON endpoint, `/knowledge/file` takes no `source`.
+// filename; this endpoint takes no `source` of its own.
 //
 // No timeout is set: extraction runs one vision call per embedded image, so a
 // large PDF legitimately takes minutes on this single request.
@@ -103,27 +88,82 @@ export const ingestFile = async (
   return toKnowledgeIngestResult(data);
 };
 
-// Fetches a page server-side and ingests it. The browser can't do this itself
-// (CORS), and the server resolves every redirect hop against private address
-// space before connecting — so this endpoint is the only path in.
+// Both resolution endpoints answer one deferred call and return the same
+// shape: the run's reply, plus whatever is still unanswered. A run only
+// resumes once nothing is outstanding, so `pendingCalls` coming back non-empty
+// means the reply is a progress note, not the final answer.
 //
-// Like uploads, no timeout: the fetch, extraction and page summary all happen
-// inside this one request.
-export const ingestUrl = async (
+// Neither streams — the whole body arrives at once — and neither is safe to
+// retry blindly: the call is resolved on arrival, so a second attempt is 409.
+const toDeferralResult = (
+  data: z.infer<typeof ZizaChatResponseSchema>,
+): DeferralResult => ({
+  response: data.response,
+  pendingCalls: data.pending_calls.map(toPendingCall),
+});
+
+// Answers an `approval` gate. The tool body runs on the way through when
+// approved, so this is where a deletion actually happens.
+export const resolveApproval = async (
   sessionId: string,
-  url: string,
-): Promise<KnowledgeIngestResult | KnowledgeIngestFailure> => {
+  toolCallId: string,
+  approved: boolean,
+): Promise<DeferralResult | DeferralFailure> => {
   const { data, ok, status, errorData } = await request(
-    "/ziza/knowledge/url",
-    KnowledgeIngestResponseSchema,
-    { method: "POST", data: { session_id: sessionId, url }, timeout: 0 },
+    "/ziza/chat/approval",
+    ZizaChatResponseSchema,
+    {
+      method: "POST",
+      data: {
+        session_id: sessionId,
+        tool_call_id: toolCallId,
+        approved,
+      },
+    },
   );
 
   if (!ok || !data) {
     return { status, detail: readErrorDetail(errorData) };
   }
-  return toKnowledgeIngestResult(data);
+  return toDeferralResult(data);
 };
+
+// Answers an `add_url_to_knowledge_base` deferred call by naming which of the
+// offered links to index alongside the page. This endpoint does the indexing
+// itself, so it can take a while.
+//
+// An empty selection is a real answer meaning "just the page itself" — it is
+// not the same as walking away, which is what leaves the run paused.
+export const resolveLinkSelection = async (
+  sessionId: string,
+  toolCallId: string,
+  selectedLinks: readonly string[],
+): Promise<DeferralResult | DeferralFailure> => {
+  const { data, ok, status, errorData } = await request(
+    "/ziza/chat/links",
+    ZizaChatResponseSchema,
+    {
+      method: "POST",
+      data: {
+        session_id: sessionId,
+        tool_call_id: toolCallId,
+        selected_links: selectedLinks,
+      },
+      timeout: 0,
+    },
+  );
+
+  if (!ok || !data) {
+    return { status, detail: readErrorDetail(errorData) };
+  }
+  return toDeferralResult(data);
+};
+
+export function isDeferralFailure(
+  result: DeferralResult | DeferralFailure,
+): result is DeferralFailure {
+  return "status" in result;
+}
 
 export function isIngestFailure(
   result: KnowledgeIngestResult | KnowledgeIngestFailure,
