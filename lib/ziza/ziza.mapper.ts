@@ -1,7 +1,10 @@
 import { type z } from "zod";
 
-import { type KnowledgeIngestResponseSchema } from "./ziza.schema";
-import { type KnowledgeIngestResult } from "./ziza.types";
+import {
+  type KnowledgeIngestResponseSchema,
+  type ZizaPendingCallSchema,
+} from "./ziza.schema";
+import { type KnowledgeIngestResult, type PendingCall } from "./ziza.types";
 
 export const toKnowledgeIngestResult = (
   apiResult: z.infer<typeof KnowledgeIngestResponseSchema>,
@@ -12,6 +15,44 @@ export const toKnowledgeIngestResult = (
   searchable: apiResult.searchable,
   imagesDescribed: apiResult.images_described,
   imagesFailed: apiResult.images_failed,
-  imagesTotal: apiResult.images_total,
+  documentsUsed: apiResult.documents_used,
+  documentsAllowed: apiResult.documents_allowed,
   pagesSummarised: apiResult.pages_summarised,
 });
+
+// Whose call this is belongs to the backend — the tool knows what it does —
+// but nothing on the wire says so yet. `details.severity` wins when present;
+// until then the only destructive tool is the delete, and anything new is
+// treated as ordinary rather than assumed dangerous.
+const DESTRUCTIVE_TOOL_NAMES = new Set(["clear_knowledge_base"]);
+
+export const toPendingCall = (
+  apiCall: z.infer<typeof ZizaPendingCallSchema>,
+): PendingCall => {
+  const { details } = apiCall;
+  const shared = {
+    toolCallId: apiCall.tool_call_id,
+    toolName: apiCall.tool_name,
+    summary: details.summary,
+  };
+
+  if (apiCall.kind === "approval") {
+    return {
+      ...shared,
+      kind: "approval",
+      documents: details.documents ?? [],
+      isDestructive: details.severity
+        ? details.severity === "destructive"
+        : DESTRUCTIVE_TOOL_NAMES.has(apiCall.tool_name),
+    };
+  }
+
+  return {
+    ...shared,
+    kind: "call",
+    pageUrl: details.url,
+    pageTitle: details.page_title ?? undefined,
+    links: details.links ?? [],
+    slotsLeft: details.slots_left,
+  };
+};

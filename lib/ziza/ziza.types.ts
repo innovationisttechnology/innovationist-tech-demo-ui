@@ -7,7 +7,8 @@ export type KnowledgeIngestResult = {
   searchable: boolean;
   imagesDescribed: number;
   imagesFailed: number;
-  imagesTotal: number;
+  documentsUsed: number;
+  documentsAllowed: number;
   pagesSummarised: number;
 };
 
@@ -19,7 +20,63 @@ export type KnowledgeIngestFailure = {
   detail?: string;
 };
 
-export type SourceKind = "text" | "file" | "url";
+export type DeferredKind = "approval" | "call";
+
+export type OfferedLink = {
+  url: string;
+  text: string;
+};
+
+type PendingCallBase = {
+  toolCallId: string;
+  toolName: string;
+  // Written server-side by the tool that paused, so the UI never has to
+  // describe an action whose shape it doesn't know.
+  summary?: string;
+};
+
+// A yes/no gate. Nothing has run; confirming re-enters the tool body.
+export type PendingApprovalCall = PendingCallBase & {
+  kind: "approval";
+  documents: readonly string[];
+  // Drives how alarming the gate looks. Reserved for things that destroy or
+  // send something — an ordinary confirmation in red trains people to click
+  // through red.
+  isDestructive: boolean;
+};
+
+// Deferred for external execution: the tool body never runs again, and the
+// result supplied from outside becomes its return value. There is nothing to
+// approve, so this offers a choice rather than a confirmation.
+export type PendingInputCall = PendingCallBase & {
+  kind: "call";
+  pageUrl?: string;
+  pageTitle?: string;
+  links: readonly OfferedLink[];
+  slotsLeft?: number;
+};
+
+export type PendingCall = PendingApprovalCall | PendingInputCall;
+
+export type DeferralResult = {
+  response: string;
+  // Everything still unanswered — the server is authoritative here, so this
+  // replaces the local list rather than being subtracted from it.
+  pendingCalls: readonly PendingCall[];
+};
+
+// A decision is spendable once — the backend resolves the call on arrival —
+// so 409 means it was already spent or the paused run aged out. 422 means a
+// link was submitted that this call never offered. The status is carried back
+// rather than collapsed to null so the UI can say which happened.
+export type DeferralFailure = {
+  status: number;
+  detail?: string;
+};
+
+// "url" stays even though there is no URL input: accepting a crawled-link
+// offer in chat still produces url-kind rows.
+export type SourceKind = "file" | "url";
 
 export type KnowledgeSourceStatus =
   "uploading" | "processing" | "indexed" | "pending-index" | "failed";
@@ -40,6 +97,17 @@ export type KnowledgeSource = {
   imagesSkipped?: number;
   pagesSummarised?: number;
   errorDetail?: string;
+};
+
+// An offer to try something else, shown as a chip under the last reply when
+// retrieval found nothing. Clicking one sends `message` as an ordinary chat
+// message — `label` is only what the chip reads.
+export type Suggestion = {
+  // Open-ended by design: unrecognised kinds still render and still send.
+  kind: string;
+  label: string;
+  message: string;
+  url?: string;
 };
 
 export type InspectorEntryLevel = "open" | "info" | "tool" | "error" | "done";

@@ -13,6 +13,18 @@ import {
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 const TEXT_PART_ID = "text-0";
 
+// Server-side tracing of the raw backend SSE, so the HITL contract can be read
+// off the terminal while it is still being built out. `event:` names and frames
+// the schemas reject are the interesting ones — an approval frame the frontend
+// has no variant for is otherwise dropped in silence.
+const LOG_PREFIX = "[ziza stream]";
+const MAX_LOGGED_PAYLOAD_CHARS = 500;
+
+const truncate = (payload: string) =>
+  payload.length <= MAX_LOGGED_PAYLOAD_CHARS
+    ? payload
+    : `${payload.slice(0, MAX_LOGGED_PAYLOAD_CHARS)}… (+${payload.length - MAX_LOGGED_PAYLOAD_CHARS} chars)`;
+
 /**
  * Protocol translator: the demo API speaks its own SSE dialect, the AI SDK's
  * `useChat` speaks UI message streams. This route is the only place that knows
@@ -78,6 +90,7 @@ export async function POST(incomingRequest: Request) {
       const decoder = new TextDecoder();
       let buffer = "";
       let hasOpenTextPart = false;
+      let frameCount = 0;
 
       const writeTextDelta = (delta: string) => {
         if (!hasOpenTextPart) {
@@ -87,29 +100,45 @@ export async function POST(incomingRequest: Request) {
         writer.write({ type: "text-delta", delta, id: TEXT_PART_ID });
       };
 
-      const handleFrame = (payload: string) => {
+      const handleFrame = (payload: string, eventName?: string) => {
+        frameCount += 1;
+        const origin = `${LOG_PREFIX} frame ${frameCount}${eventName ? ` event=${eventName}` : ""}`;
+
         let frame: unknown;
         try {
           frame = JSON.parse(payload);
         } catch {
+          console.warn(`${origin} unparseable:`, truncate(payload));
           return; // skip malformed frames rather than killing the stream
         }
 
         const textFrame = ZizaTextFrameSchema.safeParse(frame);
         if (textFrame.success) {
+          console.log(`${origin} text:`, truncate(textFrame.data.chunk));
           writeTextDelta(textFrame.data.chunk);
           return;
         }
 
         const agentEvent = ZizaAgentEventSchema.safeParse(frame);
         if (agentEvent.success) {
+          console.log(`${origin} agent event:`, truncate(payload));
           writer.write({
             type: "data-ziza",
             data: agentEvent.data,
             transient: true,
           });
+          return;
         }
+
+        console.warn(
+          `${origin} no schema matched — dropped, nothing reaches the client:`,
+          truncate(payload),
+        );
       };
+
+      // An SSE frame is an `event:` line followed by its `data:` line, so the
+      // name is carried forward to the frame it labels.
+      let pendingEventName: string | undefined;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -122,21 +151,31 @@ export async function POST(incomingRequest: Request) {
         buffer = lines.pop() ?? "";
 
         for (const line of lines) {
-          const payload = line.startsWith("data:")
-            ? line.slice(5).trim()
-            : line.trim();
+          const trimmed = line.trim();
+
+          if (trimmed.startsWith("event:")) {
+            pendingEventName = trimmed.slice(6).trim();
+            continue;
+          }
+
+          const payload = trimmed.startsWith("data:")
+            ? trimmed.slice(5).trim()
+            : trimmed;
 
           if (!payload || payload === "[DONE]") {
             continue;
           }
 
-          handleFrame(payload);
+          handleFrame(payload, pendingEventName);
+          pendingEventName = undefined;
         }
       }
 
       if (hasOpenTextPart) {
         writer.write({ type: "text-end", id: TEXT_PART_ID });
       }
+
+      console.log(`${LOG_PREFIX} closed after ${frameCount} frame(s)`);
 
       writer.write({
         type: "data-ziza",

@@ -1,18 +1,15 @@
 "use client";
 
-import { useState, type ChangeEvent, type FormEvent } from "react";
+import { useEffect, useState, type ChangeEvent } from "react";
 import {
   FileArrowUpIcon,
   FileTextIcon,
   ImageIcon,
   LinkIcon,
-  PlusIcon,
-  TextAlignLeftIcon,
   TrashIcon,
   WarningIcon,
 } from "@phosphor-icons/react";
 
-import { Button } from "@/components/ui/button";
 import {
   Empty,
   EmptyDescription,
@@ -24,19 +21,11 @@ import { Item, ItemContent, ItemMedia } from "@/components/ui/item";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   MAX_UPLOAD_BYTES,
-  MAX_URL_LENGTH,
   SUPPORTED_UPLOAD_EXTENSIONS,
   UPLOAD_ACCEPT_ATTRIBUTE,
 } from "@/lib/ziza/ziza.service";
-import { type KnowledgeSource, type SourceKind } from "@/lib/ziza/ziza.types";
+import { type KnowledgeSource } from "@/lib/ziza/ziza.types";
 
 const STATUS_LABEL: Record<KnowledgeSource["status"], string> = {
   uploading: "uploading…",
@@ -54,36 +43,18 @@ const STATUS_CLASS: Record<KnowledgeSource["status"], string> = {
   failed: "text-rose-600 dark:text-rose-300",
 };
 
-const SUBMIT_LABEL: Record<SourceKind, string> = {
-  text: "Add source",
-  file: "Upload",
-  url: "Fetch & add",
-};
+// This panel only takes documents now, and everything else the demo can do
+// happens in the chat — which a panel with one file button has no way to say.
+// Rotating through it is the cheapest place to teach the model of the thing
+// without a wall of text nobody reads.
+const EMPTY_HINTS = [
+  "Upload a document to get started — text, Markdown, CSV, JSON, PDF, DOCX, or an image.",
+  "Paste a link in the chat instead, and Ziza offers to index that page along with the pages it links to.",
+  "Answers come only from what is in here. Nothing added means nothing to answer from.",
+  "Ask it to clear the knowledge base and it will ask you to confirm before anything is deleted.",
+];
 
-/**
- * Fast-fail checks mirroring the server's. It rejects private hosts by
- * resolving them, which the browser cannot do — so this only catches the
- * malformed cases and leaves the security decision where it belongs.
- */
-function validateUrl(candidate: string): string | undefined {
-  const trimmed = candidate.trim();
-  if (!trimmed) {
-    return "Paste a link first.";
-  }
-  if (trimmed.length > MAX_URL_LENGTH) {
-    return `That link is too long. Keep it under ${MAX_URL_LENGTH} characters.`;
-  }
-  let parsed: URL;
-  try {
-    parsed = new URL(trimmed);
-  } catch {
-    return "That does not look like a link. Start it with https://";
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    return `We can only fetch http and https links, not ${parsed.protocol.replace(":", "")}.`;
-  }
-  return undefined;
-}
+const HINT_ROTATION_MS = 7000;
 
 function extensionOf(filename: string): string {
   const dotIndex = filename.lastIndexOf(".");
@@ -178,9 +149,7 @@ type SourcesPanelProps = {
   activeSourceLabels: readonly string[];
   isReady: boolean;
   elapsedTick: number;
-  onAddTextAction: (label: string, text: string) => void;
   onAddFileAction: (file: File) => void;
-  onAddUrlAction: (url: string) => void;
   onClearAllAction: () => void;
 };
 
@@ -189,85 +158,55 @@ export function SourcesPanel({
   activeSourceLabels,
   isReady,
   elapsedTick,
-  onAddTextAction,
   onAddFileAction,
-  onAddUrlAction,
   onClearAllAction,
 }: SourcesPanelProps) {
-  const [kind, setKind] = useState<SourceKind>("text");
-  const [label, setLabel] = useState("");
-  const [text, setText] = useState("");
-  const [url, setUrl] = useState("");
-  const [file, setFile] = useState<File | null>(null);
   const [notice, setNotice] = useState("");
+  const [hintIndex, setHintIndex] = useState(0);
 
-  function handleKindChange(nextKind: string) {
-    setKind(nextKind as SourceKind);
-    setNotice("");
-  }
+  const isEmpty = sources.length === 0;
 
-  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const selectedFile = event.target.files?.[0];
-    if (!selectedFile) {
+  // Only ticks while the hints are on screen — an idle panel shouldn't be
+  // re-rendering forever behind a populated list.
+  useEffect(() => {
+    if (!isEmpty) {
       return;
     }
-    setFile(selectedFile);
-    setNotice(validateFile(selectedFile) ?? "");
-  }
+    const rotation = setInterval(
+      () => setHintIndex((current) => (current + 1) % EMPTY_HINTS.length),
+      HINT_ROTATION_MS,
+    );
+    return () => clearInterval(rotation);
+  }, [isEmpty]);
 
-  function handleUrlChange(event: ChangeEvent<HTMLInputElement>) {
-    setUrl(event.target.value);
-    setNotice("");
-  }
+  // Selecting the files IS the action — there is no second "upload" step to
+  // confirm, because picking a document is already an unambiguous request to
+  // add it. Each file is sent on its own: there is no batch endpoint, and one
+  // oversized file shouldn't stop the others.
+  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const selected = Array.from(event.target.files ?? []);
+    // Clearing the input lets the same filename be re-picked after removal;
+    // without it the browser sees no change and never fires again.
+    event.target.value = "";
 
-  // Controls stay enabled — submitting with invalid or unsupported input
-  // explains what's wrong rather than silently doing nothing.
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
+    if (selected.length === 0) {
+      return;
+    }
     if (!isReady) {
       setNotice("Still setting up your session. Give it a second.");
       return;
     }
 
-    if (kind === "url") {
-      const problem = validateUrl(url);
-      if (problem) {
-        setNotice(problem);
-        return;
-      }
-      setNotice("");
-      onAddUrlAction(url.trim());
-      setUrl("");
-      return;
-    }
-
-    if (kind === "file") {
-      if (!file) {
-        setNotice("Pick a file first.");
-        return;
-      }
+    const rejected: string[] = [];
+    for (const file of selected) {
       const problem = validateFile(file);
       if (problem) {
-        setNotice(problem);
-        return;
+        rejected.push(`${file.name}: ${problem}`);
+        continue;
       }
-      setNotice("");
       onAddFileAction(file);
-      setFile(null);
-      return;
     }
-
-    const trimmedText = text.trim();
-    if (!trimmedText) {
-      setNotice("Paste some text first.");
-      return;
-    }
-
-    setNotice("");
-    onAddTextAction(label.trim() || "untitled", trimmedText);
-    setLabel("");
-    setText("");
+    setNotice(rejected.join(" "));
   }
 
   return (
@@ -302,9 +241,16 @@ export function SourcesPanel({
               <EmptyTitle className="font-mono text-xs tracking-widest uppercase">
                 No sources
               </EmptyTitle>
-              <EmptyDescription className="text-xs">
-                Paste some text, upload a file, or drop in a link. Then ask
-                about it.
+              {/*
+                Keyed so React swaps the node and replays the fade; no
+                aria-live, since text rotating under a screen reader is worse
+                than text that simply sits there when they reach it.
+              */}
+              <EmptyDescription
+                key={hintIndex}
+                className="animate-in fade-in-0 text-xs duration-500"
+              >
+                {EMPTY_HINTS[hintIndex]}
               </EmptyDescription>
             </EmptyHeader>
           </Empty>
@@ -371,102 +317,31 @@ export function SourcesPanel({
         )}
       </ScrollArea>
 
-      {/* noValidate: `type="url"` would otherwise fire the browser's own
-          validation bubble and skip handleSubmit entirely, so the malformed-URL
-          case never reached our inline notice — two error UIs for one field. */}
-      <form
-        noValidate
-        onSubmit={handleSubmit}
-        className="border-border shrink-0 space-y-2 border-t p-3"
-      >
-        <Select value={kind} onValueChange={handleKindChange}>
-          <SelectTrigger
-            size="sm"
-            aria-label="Source type"
-            className="w-full text-xs"
-          >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="text">
-              <TextAlignLeftIcon className="size-3.5" />
-              Paste text
-            </SelectItem>
-            <SelectItem value="file">
-              <FileArrowUpIcon className="size-3.5" />
-              Document upload
-            </SelectItem>
-            <SelectItem value="url">
-              <LinkIcon className="size-3.5" />
-              Website URL
-            </SelectItem>
-          </SelectContent>
-        </Select>
-
-        {/* Label only applies to pasted text. /knowledge/file uses the filename
-            and /knowledge/url uses the page title, so an editable box on those
-            would imply a control that doesn't exist. */}
-        {kind === "text" ? (
+      <div className="border-border shrink-0 space-y-2 border-t p-3">
+        {/*
+          The label wraps the input so there's a single control in the a11y
+          tree — a visually-hidden input beside a separate button would be
+          announced twice.
+        */}
+        <label className="border-border hover:border-primary/50 hover:bg-muted/40 has-[:focus-visible]:ring-ring/50 flex w-full cursor-pointer flex-col items-center gap-1.5 rounded-md border border-dashed px-2 py-5 transition-colors has-[:focus-visible]:ring-2">
           <input
-            type="text"
-            value={label}
-            onChange={(event) => setLabel(event.target.value)}
-            placeholder="Label (optional)"
-            aria-label="Source label"
-            className="border-border bg-background focus-visible:ring-ring/50 w-full rounded-md border px-2 py-1.5 font-sans text-xs outline-none focus-visible:ring-2"
+            type="file"
+            multiple
+            onChange={handleFileChange}
+            accept={UPLOAD_ACCEPT_ATTRIBUTE}
+            className="sr-only"
           />
-        ) : null}
-
-        {kind === "text" ? (
-          <textarea
-            value={text}
-            onChange={(event) => {
-              setText(event.target.value);
-              setNotice("");
-            }}
-            placeholder="Paste document text…"
-            aria-label="Source text"
-            rows={4}
-            className="border-border bg-background focus-visible:ring-ring/50 w-full resize-none rounded-md border px-2 py-1.5 font-sans text-xs outline-none focus-visible:ring-2"
+          <FileArrowUpIcon
+            weight="duotone"
+            className="text-muted-foreground size-5"
           />
-        ) : null}
-
-        {kind === "file" ? (
-          // The label wraps the input so there's a single control in the a11y
-          // tree — a visually-hidden input beside a separate button would be
-          // announced twice.
-          <label className="border-border hover:border-primary/50 hover:bg-muted/40 has-[:focus-visible]:ring-ring/50 flex w-full cursor-pointer flex-col items-center gap-1.5 rounded-md border border-dashed px-2 py-5 transition-colors has-[:focus-visible]:ring-2">
-            <input
-              type="file"
-              onChange={handleFileChange}
-              accept={UPLOAD_ACCEPT_ATTRIBUTE}
-              className="sr-only"
-            />
-            <FileArrowUpIcon
-              weight="duotone"
-              className="text-muted-foreground size-5"
-            />
-            <span className="text-muted-foreground max-w-full truncate font-sans text-xs">
-              {file ? file.name : "Choose a file"}
-            </span>
-            <span className="text-muted-foreground/70 font-mono text-[0.625rem]">
-              {file
-                ? formatMegabytes(file.size)
-                : `text · pdf · docx · images · ≤${formatMegabytes(MAX_UPLOAD_BYTES)}`}
-            </span>
-          </label>
-        ) : null}
-
-        {kind === "url" ? (
-          <input
-            type="url"
-            value={url}
-            onChange={handleUrlChange}
-            placeholder="https://example.com/page"
-            aria-label="Website URL"
-            className="border-border bg-background focus-visible:ring-ring/50 w-full rounded-md border px-2 py-1.5 font-sans text-xs outline-none focus-visible:ring-2"
-          />
-        ) : null}
+          <span className="text-muted-foreground max-w-full truncate font-sans text-xs">
+            Add documents
+          </span>
+          <span className="text-muted-foreground/70 font-mono text-[0.625rem]">
+            {`text · pdf · docx · images · ≤${formatMegabytes(MAX_UPLOAD_BYTES)}`}
+          </span>
+        </label>
 
         {notice ? (
           <p
@@ -477,12 +352,7 @@ export function SourcesPanel({
             {notice}
           </p>
         ) : null}
-
-        <Button type="submit" size="sm" className="w-full">
-          <PlusIcon weight="bold" data-icon="inline-start" />
-          {SUBMIT_LABEL[kind]}
-        </Button>
-      </form>
+      </div>
     </section>
   );
 }
