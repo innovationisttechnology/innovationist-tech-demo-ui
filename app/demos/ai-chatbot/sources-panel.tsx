@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useState, type ChangeEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type DragEvent,
+} from "react";
 import {
   FileArrowUpIcon,
   FileTextIcon,
@@ -49,6 +55,7 @@ const STATUS_CLASS: Record<KnowledgeSource["status"], string> = {
 // without a wall of text nobody reads.
 const EMPTY_HINTS = [
   "Upload a document to get started — text, Markdown, CSV, JSON, PDF, DOCX, or an image.",
+  "Drag files straight onto this panel, as many at once as you like.",
   "Paste a link in the chat instead, and Ziza offers to index that page along with the pages it links to.",
   "Answers come only from what is in here. Nothing added means nothing to answer from.",
   "Ask it to clear the knowledge base and it will ask you to confirm before anything is deleted.",
@@ -144,6 +151,27 @@ function SourceIcon({
   );
 }
 
+// Dragging selected text or a link fires the same events; only a payload that
+// actually carries files should light the panel up.
+function carriesFiles(transfer: DataTransfer | null): boolean {
+  return transfer !== null && Array.from(transfer.types).includes("Files");
+}
+
+/**
+ * Names of any folders in the drop.
+ *
+ * `webkitGetAsEntry` is only valid synchronously inside the drop handler — the
+ * items are neutered the moment it returns — so this cannot be deferred.
+ */
+function droppedFolderNames(transfer: DataTransfer): string[] {
+  return Array.from(transfer.items)
+    .map((item) => item.webkitGetAsEntry?.() ?? null)
+    .filter(
+      (entry): entry is FileSystemEntry => entry !== null && entry.isDirectory,
+    )
+    .map((entry) => entry.name);
+}
+
 type SourcesPanelProps = {
   sources: readonly KnowledgeSource[];
   activeSourceLabels: readonly string[];
@@ -163,6 +191,11 @@ export function SourcesPanel({
 }: SourcesPanelProps) {
   const [notice, setNotice] = useState("");
   const [hintIndex, setHintIndex] = useState(0);
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
+  // dragenter/dragleave fire again for every descendant the pointer crosses,
+  // so depth — not a boolean — is what stops the overlay strobing as the
+  // cursor moves over the source rows.
+  const dragDepth = useRef(0);
 
   const isEmpty = sources.length === 0;
 
@@ -183,13 +216,24 @@ export function SourcesPanel({
   // confirm, because picking a document is already an unambiguous request to
   // add it. Each file is sent on its own: there is no batch endpoint, and one
   // oversized file shouldn't stop the others.
-  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const selected = Array.from(event.target.files ?? []);
-    // Clearing the input lets the same filename be re-picked after removal;
-    // without it the browser sees no change and never fires again.
-    event.target.value = "";
+  // A file dropped anywhere else on the page navigates the tab to it, which
+  // silently ends the session. Nothing else here accepts a drop, so refusing
+  // it document-wide costs nothing and saves the visitor's work.
+  useEffect(() => {
+    const swallowDrop = (event: Event) => event.preventDefault();
+    window.addEventListener("dragover", swallowDrop);
+    window.addEventListener("drop", swallowDrop);
+    return () => {
+      window.removeEventListener("dragover", swallowDrop);
+      window.removeEventListener("drop", swallowDrop);
+    };
+  }, []);
 
-    if (selected.length === 0) {
+  // The one path in, shared by the picker and the drop. Each file goes on its
+  // own request — there is no batch endpoint — and one rejected file must not
+  // take the rest with it.
+  function addFiles(files: readonly File[], folders: readonly string[] = []) {
+    if (files.length === 0 && folders.length === 0) {
       return;
     }
     if (!isReady) {
@@ -197,8 +241,10 @@ export function SourcesPanel({
       return;
     }
 
-    const rejected: string[] = [];
-    for (const file of selected) {
+    const rejected = folders.map(
+      (folder) => `${folder}: drop the files inside, not the folder.`,
+    );
+    for (const file of files) {
       const problem = validateFile(file);
       if (problem) {
         rejected.push(`${file.name}: ${problem}`);
@@ -209,11 +255,90 @@ export function SourcesPanel({
     setNotice(rejected.join(" "));
   }
 
+  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const selected = Array.from(event.target.files ?? []);
+    // Clearing the input lets the same filename be re-picked after removal;
+    // without it the browser sees no change and never fires again.
+    event.target.value = "";
+    addFiles(selected);
+  }
+
+  function handleDragEnter(event: DragEvent<HTMLElement>) {
+    if (!carriesFiles(event.dataTransfer)) {
+      return;
+    }
+    event.preventDefault();
+    dragDepth.current += 1;
+    setIsDraggingOver(true);
+  }
+
+  function handleDragOver(event: DragEvent<HTMLElement>) {
+    if (!carriesFiles(event.dataTransfer)) {
+      return;
+    }
+    // Without this the drop never fires and the browser opens the file in the
+    // tab instead.
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }
+
+  function handleDragLeave(event: DragEvent<HTMLElement>) {
+    if (!carriesFiles(event.dataTransfer)) {
+      return;
+    }
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) {
+      setIsDraggingOver(false);
+    }
+  }
+
+  // Dropping is an unambiguous "add these" — there is no confirm step, the
+  // same as picking a file is already the whole interaction.
+  function handleDrop(event: DragEvent<HTMLElement>) {
+    if (!carriesFiles(event.dataTransfer)) {
+      return;
+    }
+    event.preventDefault();
+    dragDepth.current = 0;
+    setIsDraggingOver(false);
+
+    const folders = droppedFolderNames(event.dataTransfer);
+    // A folder appears in `files` too; drop it so it isn't reported twice.
+    const files = Array.from(event.dataTransfer.files).filter(
+      (file) => !folders.includes(file.name),
+    );
+    addFiles(files, folders);
+  }
+
   return (
+    // The whole panel is the target, not just the picker: aiming for a small
+    // control is the part of dragging people get wrong, and everything in here
+    // already means "the session's documents".
     <section
-      className="flex h-full flex-col overflow-hidden"
+      className="relative flex h-full flex-col overflow-hidden"
       aria-label="Knowledge base sources"
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
     >
+      {/*
+        pointer-events-none is load-bearing: an overlay that takes pointer
+        events fires dragleave the instant it renders, and the highlight
+        flickers on and off under the cursor.
+
+        Drag and drop is unreachable by keyboard, so it stays an accelerator —
+        the file input beneath it remains the accessible path in.
+      */}
+      {isDraggingOver ? (
+        <div className="border-primary bg-background/85 pointer-events-none absolute inset-2 z-10 flex flex-col items-center justify-center gap-2 rounded-md border-2 border-dashed">
+          <FileArrowUpIcon weight="duotone" className="text-primary size-6" />
+          <span className="text-primary font-mono text-[0.625rem] tracking-widest uppercase">
+            Drop to add
+          </span>
+        </div>
+      ) : null}
+
       <header className="border-border text-muted-foreground flex shrink-0 items-center justify-between border-b px-3 py-2.5 font-mono text-[0.625rem] tracking-widest uppercase">
         <span>Sources</span>
         <span className="flex items-center gap-2">
@@ -337,6 +462,9 @@ export function SourcesPanel({
           />
           <span className="text-muted-foreground max-w-full truncate font-sans text-xs">
             Add documents
+          </span>
+          <span className="text-muted-foreground/70 font-sans text-[0.6875rem]">
+            or drag them anywhere in this panel
           </span>
           <span className="text-muted-foreground/70 font-mono text-[0.625rem]">
             {`text · pdf · docx · images · ≤${formatMegabytes(MAX_UPLOAD_BYTES)}`}
