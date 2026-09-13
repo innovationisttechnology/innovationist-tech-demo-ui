@@ -80,6 +80,45 @@ export const KnowledgeSuggestionsResponseSchema = z.object({
   suggestions: z.array(ZizaSuggestionSchema).default([]),
 });
 
+// One page of a stored conversation, newest page first. Ids are derived from
+// the stored turn rather than its position, so deduplicating across pages while
+// scrolling back is safe.
+export const ChatHistoryResponseSchema = z.object({
+  session_id: z.string(),
+  turns: z
+    .array(
+      z.object({
+        id: z.string(),
+        role: z.enum(["user", "assistant"]),
+        text: z.string(),
+        at: z.string(),
+      }),
+    )
+    .default([]),
+  has_more: z.boolean().default(false),
+  next_before: z.string().nullish(),
+});
+
+// The cold read of a session's documents, so a reload doesn't empty a panel
+// whose session still holds — and still answers from — them.
+export const KnowledgeSourcesResponseSchema = z.object({
+  session_id: z.string(),
+  documents_used: z.number().default(0),
+  documents_allowed: z.number().default(0),
+  sources: z
+    .array(
+      z.object({
+        // The document's identity, not its display label: a filename, or the
+        // URL as submitted rather than the one it redirected to.
+        document: z.string(),
+        kind: z.enum(["file", "url"]),
+        chunks: z.number().default(0),
+        added_at: z.string(),
+      }),
+    )
+    .default([]),
+});
+
 export const KnowledgeClearResponseSchema = z.object({
   session_id: z.string(),
   chunks_deleted: z.number(),

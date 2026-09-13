@@ -1,13 +1,17 @@
 import { type z } from "zod";
 
 import {
+  type ChatHistoryResponseSchema,
   type KnowledgeIngestResponseSchema,
+  type KnowledgeSourcesResponseSchema,
   type KnowledgeSuggestionsResponseSchema,
   type ZizaPendingCallSchema,
 } from "./ziza.schema";
 import {
+  type ChatHistoryPage,
   type KnowledgeIngestResult,
   type PendingCall,
+  type SessionSources,
   type StarterQuestions,
 } from "./ziza.types";
 
@@ -68,4 +72,34 @@ export const toStarterQuestions = (
 ): StarterQuestions => ({
   document: apiResult.document,
   suggestions: apiResult.suggestions,
+});
+
+export const toSessionSources = (
+  apiResult: z.infer<typeof KnowledgeSourcesResponseSchema>,
+): SessionSources => ({
+  documentsUsed: apiResult.documents_used,
+  documentsAllowed: apiResult.documents_allowed,
+  sources: [...apiResult.sources]
+    .sort((left, right) => left.added_at.localeCompare(right.added_at))
+    .map((source) => ({
+      // `document` is the identity the backend keys on, so it is also a stable
+      // row id — unlike the random one a live upload gets.
+      id: source.document,
+      label: source.document,
+      kind: source.kind,
+      chunkCount: source.chunks,
+      status: "indexed" as const,
+    })),
+});
+
+export const toChatHistoryPage = (
+  apiResult: z.infer<typeof ChatHistoryResponseSchema>,
+): ChatHistoryPage => ({
+  turns: apiResult.turns.map((turn) => ({
+    id: turn.id,
+    role: turn.role,
+    text: turn.text,
+  })),
+  hasMore: apiResult.has_more,
+  nextBefore: apiResult.next_before ?? null,
 });

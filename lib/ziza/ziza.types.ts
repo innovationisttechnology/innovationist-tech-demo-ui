@@ -100,6 +100,27 @@ export type StarterQuestions = {
   suggestions: readonly Suggestion[];
 };
 
+// Mirrors `ChatTurn` in `chat-panel.tsx`, redeclared here so the API layer
+// does not depend on a component.
+export type ChatHistoryTurn = {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+};
+
+export type ChatHistoryPage = {
+  turns: readonly ChatHistoryTurn[];
+  hasMore: boolean;
+  // Pass back as `before` for the next page older than this one.
+  nextBefore: string | null;
+};
+
+export type SessionSources = {
+  documentsUsed: number;
+  documentsAllowed: number;
+  sources: readonly KnowledgeSource[];
+};
+
 export type InspectorEntryLevel = "open" | "info" | "tool" | "error" | "done";
 
 export type InspectorEntry = {

@@ -29,6 +29,7 @@ function renderPanel(overrides: Partial<Parameters<typeof ChatPanel>[0]> = {}) {
       starterQuestions={[]}
       resolvingCallId={null}
       onSendAction={onSendAction}
+      onLoadOlderTurnsAction={vi.fn()}
       onApprovalDecisionAction={vi.fn()}
       onLinkSelectionAction={vi.fn()}
       onDismissCallAction={vi.fn()}

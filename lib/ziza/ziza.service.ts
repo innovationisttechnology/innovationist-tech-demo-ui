@@ -3,21 +3,27 @@ import { type z } from "zod";
 import { request } from "@/lib/api/request";
 
 import {
+  toChatHistoryPage,
   toKnowledgeIngestResult,
   toPendingCall,
+  toSessionSources,
   toStarterQuestions,
 } from "./ziza.mapper";
 import {
+  ChatHistoryResponseSchema,
   KnowledgeClearResponseSchema,
   KnowledgeIngestResponseSchema,
+  KnowledgeSourcesResponseSchema,
   KnowledgeSuggestionsResponseSchema,
   ZizaChatResponseSchema,
 } from "./ziza.schema";
 import {
+  type ChatHistoryPage,
   type DeferralFailure,
   type DeferralResult,
   type KnowledgeIngestFailure,
   type KnowledgeIngestResult,
+  type SessionSources,
   type StarterQuestions,
 } from "./ziza.types";
 
@@ -163,6 +169,33 @@ export const fetchStarterQuestions = async (
     KnowledgeSuggestionsResponseSchema,
   );
   return ok && data ? toStarterQuestions(data) : null;
+};
+
+// Newest page by default; pass a prior page's `nextBefore` as `before` to walk
+// backwards. `limit` counts exchanges, not messages, and the server 422s on
+// anything outside 1-50 rather than clamping.
+export const fetchChatHistory = async (
+  sessionId: string,
+  options: { limit?: number; before?: string } = {},
+): Promise<ChatHistoryPage | null> => {
+  const { data, ok } = await request(
+    `/ziza/chat/${encodeURIComponent(sessionId)}/history`,
+    ChatHistoryResponseSchema,
+    { params: options },
+  );
+  return ok && data ? toChatHistoryPage(data) : null;
+};
+
+// Cold read only: after this, ingest responses and the local rows are
+// authoritative. Do not poll it.
+export const fetchSessionSources = async (
+  sessionId: string,
+): Promise<SessionSources | null> => {
+  const { data, ok } = await request(
+    `/ziza/knowledge/${encodeURIComponent(sessionId)}`,
+    KnowledgeSourcesResponseSchema,
+  );
+  return ok && data ? toSessionSources(data) : null;
 };
 
 export const clearKnowledge = async (

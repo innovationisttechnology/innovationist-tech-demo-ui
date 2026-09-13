@@ -31,6 +31,8 @@ import {
 import {
   ZIZA_STREAM_ROUTE,
   clearKnowledge,
+  fetchChatHistory,
+  fetchSessionSources,
   fetchStarterQuestions,
   ingestFile,
   isDeferralFailure,
@@ -39,6 +41,7 @@ import {
   resolveLinkSelection,
 } from "@/lib/ziza/ziza.service";
 import {
+  type ChatHistoryTurn,
   type InspectorEntry,
   type DeferralResult,
   type KnowledgeSource,
@@ -79,6 +82,12 @@ function formatTime(): string {
   return new Date().toLocaleTimeString("en-US", { hour12: false });
 }
 
+const toUIMessage = (turn: ChatHistoryTurn): UIMessage => ({
+  id: turn.id,
+  role: turn.role,
+  parts: [{ type: "text", text: turn.text }],
+});
+
 // Shape is only known at runtime, so narrow rather than trusting a cast.
 function readEventType(payload: unknown): string | undefined {
   if (typeof payload !== "object" || payload === null) {
@@ -110,6 +119,11 @@ export function AiChatbotDemo() {
   } | null>(null);
   const nextEntryId = useRef(0);
   const nextChunkId = useRef(0);
+  // Refs, not state: the cursor is never rendered, and a scroll handler firing
+  // between renders must see the current value.
+  const nextHistoryBefore = useRef<string | null>(null);
+  const hasMoreHistory = useRef(false);
+  const isLoadingOlderTurns = useRef(false);
   const isDesktop = useMediaQuery("(min-width: 1024px)");
 
   // Only ticks while an upload is in flight: a long extraction with a frozen
@@ -147,36 +161,6 @@ export function AiChatbotDemo() {
     },
     [],
   );
-
-  useEffect(() => {
-    let isActive = true;
-    getSessionId()
-      .then((id) => {
-        if (isActive && id) {
-          setSessionId(id);
-          pushEntry("info", "session.ready", id);
-          void fetchStarterQuestions(id).then((recovered) => {
-            if (!isActive || !recovered || recovered.suggestions.length === 0) {
-              return;
-            }
-            setStarterQuestions(recovered.suggestions);
-            pushEntry(
-              "info",
-              "starter_questions.recovered",
-              recovered.document ?? undefined,
-            );
-          });
-        }
-      })
-      .catch(() => {
-        if (isActive) {
-          pushEntry("error", "session.failed", "IndexedDB unavailable");
-        }
-      });
-    return () => {
-      isActive = false;
-    };
-  }, [pushEntry]);
 
   const transport = useMemo(
     () =>
@@ -326,6 +310,81 @@ export function AiChatbotDemo() {
     onData: handleData,
   });
 
+  useEffect(() => {
+    let isActive = true;
+    getSessionId()
+      .then((id) => {
+        if (isActive && id) {
+          setSessionId(id);
+          pushEntry("info", "session.ready", id);
+          void fetchChatHistory(id).then((page) => {
+            if (!isActive || !page) {
+              return;
+            }
+            hasMoreHistory.current = page.hasMore;
+            nextHistoryBefore.current = page.nextBefore;
+            if (page.turns.length === 0) {
+              return;
+            }
+            const restoredMessages = page.turns.map(toUIMessage);
+            // The visitor can send before this lands, and `useChat` will have
+            // appended it already.
+            setMessages((current) =>
+              current.length > 0 ? current : restoredMessages,
+            );
+            pushEntry(
+              "info",
+              "history.restored",
+              `${page.turns.length} turns · more: ${page.hasMore}`,
+            );
+          });
+
+          void fetchSessionSources(id).then((restored) => {
+            if (!isActive || !restored) {
+              return;
+            }
+            setCapacity({
+              used: restored.documentsUsed,
+              allowed: restored.documentsAllowed,
+            });
+            if (restored.sources.length === 0) {
+              return;
+            }
+            // An upload started before this settled wins: the cold read is
+            // already stale by then.
+            setSources((current) =>
+              current.length > 0 ? current : restored.sources,
+            );
+            pushEntry(
+              "info",
+              "sources.restored",
+              restored.sources.map((source) => source.label).join(", "),
+            );
+          });
+
+          void fetchStarterQuestions(id).then((recovered) => {
+            if (!isActive || !recovered || recovered.suggestions.length === 0) {
+              return;
+            }
+            setStarterQuestions(recovered.suggestions);
+            pushEntry(
+              "info",
+              "starter_questions.recovered",
+              recovered.document ?? undefined,
+            );
+          });
+        }
+      })
+      .catch(() => {
+        if (isActive) {
+          pushEntry("error", "session.failed", "IndexedDB unavailable");
+        }
+      });
+    return () => {
+      isActive = false;
+    };
+  }, [pushEntry, setMessages]);
+
   const turns: ChatTurn[] = useMemo(() => {
     const mapped: ChatTurn[] = messages.map((message: UIMessage) => ({
       id: message.id,
@@ -347,6 +406,38 @@ export function AiChatbotDemo() {
 
   const isStreaming = status === "submitted" || status === "streaming";
   const isReady = sessionId !== "";
+
+  // The cursor and the in-flight guard live here, so the panel only ever calls
+  // this and trusts it to no-op when there is nothing to fetch.
+  const loadOlderTurns = useCallback(() => {
+    if (
+      isLoadingOlderTurns.current ||
+      !hasMoreHistory.current ||
+      !nextHistoryBefore.current
+    ) {
+      return;
+    }
+    isLoadingOlderTurns.current = true;
+
+    void fetchChatHistory(sessionId, {
+      before: nextHistoryBefore.current,
+    }).then((page) => {
+      isLoadingOlderTurns.current = false;
+      if (!page) {
+        return;
+      }
+      hasMoreHistory.current = page.hasMore;
+      nextHistoryBefore.current = page.nextBefore;
+
+      setMessages((current) => {
+        const seen = new Set(current.map((message) => message.id));
+        const older = page.turns
+          .filter((turn) => !seen.has(turn.id))
+          .map(toUIMessage);
+        return older.length > 0 ? [...older, ...current] : current;
+      });
+    });
+  }, [sessionId, setMessages]);
 
   const handleSend = useCallback(
     (message: string) => {
@@ -672,6 +763,7 @@ export function AiChatbotDemo() {
       starterQuestions={starterQuestions}
       resolvingCallId={resolvingCallId}
       onSendAction={handleSend}
+      onLoadOlderTurnsAction={loadOlderTurns}
       onApprovalDecisionAction={handleApprovalDecision}
       onLinkSelectionAction={handleLinkSelection}
       onDismissCallAction={handleDismissCall}
