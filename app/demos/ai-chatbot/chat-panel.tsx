@@ -30,12 +30,7 @@ type ChatPanelProps = {
   isReady: boolean;
   errorMessage?: string;
   pendingCalls: readonly PendingCall[];
-  // Offers about the last turn: `add_page` when retrieval found nothing,
-  // `ask` when it found something worth following. Clicking one sends its
-  // `message` as an ordinary chat message — no separate endpoint behind a chip.
   suggestions: readonly Suggestion[];
-  // Questions answerable from a document that was just added. Not tied to a
-  // turn, so they keep their own slot rather than sharing the one above.
   starterQuestions: readonly Suggestion[];
   // Which card is mid-request, so only that one shows as busy.
   resolvingCallId: string | null;
@@ -62,8 +57,8 @@ export function ChatPanel({
   onLinkSelectionAction,
   onDismissCallAction,
 }: ChatPanelProps) {
-  // Same gate as the turn-level chips: a click mid-stream would cut the answer
-  // off, since chips call onSendAction directly rather than through handleSend.
+  // Chips call onSendAction directly, bypassing handleSend's streaming guard,
+  // so a click mid-stream would cut the answer off.
   const showStarterQuestions = starterQuestions.length > 0 && !isStreaming;
 
   const [draft, setDraft] = useState("");
@@ -134,9 +129,6 @@ export function ChatPanel({
       <ScrollArea ref={scrollAreaRef} className="min-h-0 flex-1">
         <div className="space-y-4 p-4" role="log" aria-live="polite">
           {turns.length === 0 && showStarterQuestions ? (
-            // The zero-state card exists to fill an empty pane and say what to
-            // do. Real questions do that better, so they replace it outright
-            // rather than sitting under a prompt to ask something.
             <StarterQuestions
               questions={starterQuestions}
               onSendAction={onSendAction}
@@ -158,9 +150,6 @@ export function ChatPanel({
             </Empty>
           ) : (
             turns.map((turn, index) => {
-              // Only under the newest reply, and only once it has finished:
-              // chips appearing mid-stream invite a click that would cut the
-              // answer off.
               const showSuggestions =
                 suggestions.length > 0 &&
                 !isStreaming &&
@@ -212,12 +201,7 @@ export function ChatPanel({
             })
           )}
 
-          {/*
-            An upload that finishes mid-conversation has nothing to do with the
-            last reply, so this stands on its own rather than hanging off a
-            turn. It clears on the next send like every other optional offer —
-            one rule for all of them is what makes ignoring one feel free.
-          */}
+          {/* Stands alone: a new document has nothing to do with the last reply. */}
           {turns.length > 0 && showStarterQuestions ? (
             <StarterQuestions
               questions={starterQuestions}
@@ -226,10 +210,8 @@ export function ChatPanel({
           ) : null}
 
           {/*
-            The run is parked server-side holding these calls, so these are
-            real gates rather than courtesy prompts — nothing has run, and
-            nothing will until each one is answered. A run with several
-            outstanding resumes only once the last is done.
+            Real gates, not prompts: the run is parked server-side and resumes
+            only once every one of these is answered.
           */}
           {pendingCalls.map((call) => (
             <DeferredCallCard

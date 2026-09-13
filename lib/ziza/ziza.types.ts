@@ -10,14 +10,11 @@ export type KnowledgeIngestResult = {
   documentsUsed: number;
   documentsAllowed: number;
   pagesSummarised: number;
-  // Questions answerable from this document, ready the moment this response
-  // lands. Empty until the backend generates them.
   suggestions: readonly Suggestion[];
 };
 
-// Ingest rejections carry a reason: 413 too large, 415 unextractable, 422
-// unsafe URL and 502 unreachable are all different things to tell someone, so
-// the service returns the status rather than collapsing every failure to null.
+// 413 too large, 415 unextractable, 422 unsafe URL, 502 unreachable — all
+// different things to tell someone, hence the status rather than null.
 export type KnowledgeIngestFailure = {
   status: number;
   detail?: string;
@@ -33,24 +30,17 @@ export type OfferedLink = {
 type PendingCallBase = {
   toolCallId: string;
   toolName: string;
-  // Written server-side by the tool that paused, so the UI never has to
-  // describe an action whose shape it doesn't know.
   summary?: string;
 };
 
-// A yes/no gate. Nothing has run; confirming re-enters the tool body.
 export type PendingApprovalCall = PendingCallBase & {
   kind: "approval";
   documents: readonly string[];
-  // Drives how alarming the gate looks. Reserved for things that destroy or
-  // send something — an ordinary confirmation in red trains people to click
-  // through red.
+  // Reserved for things that destroy or send: an ordinary confirmation in red
+  // trains people to click through red.
   isDestructive: boolean;
 };
 
-// Deferred for external execution: the tool body never runs again, and the
-// result supplied from outside becomes its return value. There is nothing to
-// approve, so this offers a choice rather than a confirmation.
 export type PendingInputCall = PendingCallBase & {
   kind: "call";
   pageUrl?: string;
@@ -63,15 +53,11 @@ export type PendingCall = PendingApprovalCall | PendingInputCall;
 
 export type DeferralResult = {
   response: string;
-  // Everything still unanswered — the server is authoritative here, so this
-  // replaces the local list rather than being subtracted from it.
   pendingCalls: readonly PendingCall[];
 };
 
-// A decision is spendable once — the backend resolves the call on arrival —
-// so 409 means it was already spent or the paused run aged out. 422 means a
-// link was submitted that this call never offered. The status is carried back
-// rather than collapsed to null so the UI can say which happened.
+// 409 means the decision was already spent or the run aged out; 422 means a
+// link this call never offered.
 export type DeferralFailure = {
   status: number;
   detail?: string;
@@ -91,9 +77,6 @@ export type KnowledgeSource = {
   kind: SourceKind;
   chunkCount: number;
   status: KnowledgeSourceStatus;
-  // Epoch ms when processing began, so the row can show elapsed time. Image
-  // captioning runs one vision call per image, so an image-heavy PDF can take
-  // a minute or more on a single blocking request.
   startedAt?: number;
   imagesDescribed?: number;
   imagesFailed?: number;
@@ -102,26 +85,16 @@ export type KnowledgeSource = {
   errorDetail?: string;
 };
 
-// An optional offer, rendered as a chip. `add_page` follows a reply that found
-// nothing, `ask` follows one that found something worth following, and an
-// ingest response carries starter questions about the document just added.
-// Clicking one sends `message` as an ordinary chat message — `label` is only
-// what the chip reads.
 export type Suggestion = {
-  // Open-ended by design: unrecognised kinds still render and still send.
   kind: string;
   label: string;
   message: string;
-  // Null when the suggestion has no page behind it, which is most of them.
   url?: string | null;
-  // Short topic label for the starter-question cards. Absent today.
   category?: string | null;
 };
 
-// Starter questions read back for a session, rather than received from the
-// upload that produced them. `document` names which one they are about, which
-// is what makes it possible to tell whether a failed-looking upload actually
-// landed.
+// `document` names which upload the questions belong to, which is how a
+// failed-looking upload can be told apart from one that actually landed.
 export type StarterQuestions = {
   document: string | null;
   suggestions: readonly Suggestion[];

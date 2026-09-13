@@ -49,10 +49,8 @@ const STATUS_CLASS: Record<KnowledgeSource["status"], string> = {
   failed: "text-rose-600 dark:text-rose-300",
 };
 
-// This panel only takes documents now, and everything else the demo can do
-// happens in the chat — which a panel with one file button has no way to say.
-// Rotating through it is the cheapest place to teach the model of the thing
-// without a wall of text nobody reads.
+// Rotating, because everything this demo can do beyond uploading happens in
+// the chat, and a panel with one file button has no way to say so.
 const EMPTY_HINTS = [
   "Upload a document to get started — text, Markdown, CSV, JSON, PDF, DOCX, or an image.",
   "Drag files straight onto this panel, as many at once as you like.",
@@ -72,15 +70,8 @@ function formatMegabytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-/**
- * Client-side pre-checks mirroring the server's guards, so an obviously bad
- * file fails instantly instead of after a 25MB upload.
- *
- * The extension check is deliberately permissive: the server decides for real
- * by sniffing the file's bytes and never trusts a filename, so a valid PDF
- * named `.dat` must reach it rather than being blocked here. Only a recognised
- * wrong extension is rejected.
- */
+// Deliberately permissive on extension: the server decides by sniffing the
+// file's bytes, so a valid PDF named `.dat` must reach it.
 function validateFile(file: File): string | undefined {
   if (file.size === 0) {
     return "There is nothing in that file.";
@@ -151,18 +142,12 @@ function SourceIcon({
   );
 }
 
-// Dragging selected text or a link fires the same events; only a payload that
-// actually carries files should light the panel up.
 function carriesFiles(transfer: DataTransfer | null): boolean {
   return transfer !== null && Array.from(transfer.types).includes("Files");
 }
 
-/**
- * Names of any folders in the drop.
- *
- * `webkitGetAsEntry` is only valid synchronously inside the drop handler — the
- * items are neutered the moment it returns — so this cannot be deferred.
- */
+// `webkitGetAsEntry` is only valid synchronously inside the drop handler — the
+// items are neutered the moment it returns — so this cannot be deferred.
 function droppedFolderNames(transfer: DataTransfer): string[] {
   return Array.from(transfer.items)
     .map((item) => item.webkitGetAsEntry?.() ?? null)
@@ -177,8 +162,6 @@ type SourcesPanelProps = {
   activeSourceLabels: readonly string[];
   isReady: boolean;
   elapsedTick: number;
-  // Server-side capacity from the last ingest. Authoritative in a way the row
-  // count is not: documents added by a tool call never passed through here.
   capacity?: { used: number; allowed: number };
   onAddFileAction: (file: File) => void;
   onClearAllAction: () => void;
@@ -196,15 +179,12 @@ export function SourcesPanel({
   const [notice, setNotice] = useState("");
   const [hintIndex, setHintIndex] = useState(0);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
-  // dragenter/dragleave fire again for every descendant the pointer crosses,
-  // so depth — not a boolean — is what stops the overlay strobing as the
-  // cursor moves over the source rows.
+  // dragenter/dragleave re-fire for every descendant the pointer crosses, so a
+  // boolean would strobe the overlay. Depth does not.
   const dragDepth = useRef(0);
 
   const isEmpty = sources.length === 0;
 
-  // Only ticks while the hints are on screen — an idle panel shouldn't be
-  // re-rendering forever behind a populated list.
   useEffect(() => {
     if (!isEmpty) {
       return;
@@ -216,9 +196,8 @@ export function SourcesPanel({
     return () => clearInterval(rotation);
   }, [isEmpty]);
 
-  // A file dropped anywhere else on the page navigates the tab to it, which
-  // silently ends the session. Nothing else here accepts a drop, so refusing
-  // it document-wide costs nothing and saves the visitor's work.
+  // A file dropped anywhere else on the page navigates the tab to it, ending
+  // the session. Nothing else here accepts a drop, so refuse it document-wide.
   useEffect(() => {
     const swallowDrop = (event: Event) => event.preventDefault();
     window.addEventListener("dragover", swallowDrop);
@@ -229,9 +208,6 @@ export function SourcesPanel({
     };
   }, []);
 
-  // The one path in, shared by the picker and the drop. Each file goes on its
-  // own request — there is no batch endpoint — and one rejected file must not
-  // take the rest with it.
   function addFiles(files: readonly File[], folders: readonly string[] = []) {
     if (files.length === 0 && folders.length === 0) {
       return;
@@ -276,8 +252,7 @@ export function SourcesPanel({
     if (!carriesFiles(event.dataTransfer)) {
       return;
     }
-    // Without this the drop never fires and the browser opens the file in the
-    // tab instead.
+    // Without this the drop never fires and the browser opens the file.
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
   }
@@ -292,8 +267,6 @@ export function SourcesPanel({
     }
   }
 
-  // Dropping is an unambiguous "add these" — there is no confirm step, the
-  // same as picking a file is already the whole interaction.
   function handleDrop(event: DragEvent<HTMLElement>) {
     if (!carriesFiles(event.dataTransfer)) {
       return;
@@ -303,7 +276,6 @@ export function SourcesPanel({
     setIsDraggingOver(false);
 
     const folders = droppedFolderNames(event.dataTransfer);
-    // A folder appears in `files` too; drop it so it isn't reported twice.
     const files = Array.from(event.dataTransfer.files).filter(
       (file) => !folders.includes(file.name),
     );
@@ -311,9 +283,8 @@ export function SourcesPanel({
   }
 
   return (
-    // The whole panel is the target, not just the picker: aiming for a small
-    // control is the part of dragging people get wrong, and everything in here
-    // already means "the session's documents".
+    // The whole panel is the target, not just the picker: aiming at a small
+    // control is the part of dragging people get wrong.
     <section
       className="relative flex h-full flex-col overflow-hidden"
       aria-label="Knowledge base sources"
@@ -325,10 +296,7 @@ export function SourcesPanel({
       {/*
         pointer-events-none is load-bearing: an overlay that takes pointer
         events fires dragleave the instant it renders, and the highlight
-        flickers on and off under the cursor.
-
-        Drag and drop is unreachable by keyboard, so it stays an accelerator —
-        the file input beneath it remains the accessible path in.
+        strobes under the cursor.
       */}
       {isDraggingOver ? (
         <div className="border-primary bg-background/85 pointer-events-none absolute inset-2 z-10 flex flex-col items-center justify-center gap-2 rounded-md border-2 border-dashed">
@@ -398,8 +366,7 @@ export function SourcesPanel({
               const isBusy =
                 source.status === "uploading" || source.status === "processing";
               const imageSummary = describeExtras(source);
-              // elapsedTick is a prop only so this re-renders each second while
-              // a long extraction runs — a minute of silence reads as hung.
+              // elapsedTick is a prop only to force the per-second re-render.
               const elapsedSeconds =
                 isBusy && source.startedAt
                   ? Math.max(
@@ -457,8 +424,7 @@ export function SourcesPanel({
       <div className="border-border shrink-0 space-y-2 border-t p-3">
         {/*
           The label wraps the input so there's a single control in the a11y
-          tree — a visually-hidden input beside a separate button would be
-          announced twice.
+          tree — a separate button beside a hidden input is announced twice.
         */}
         <label className="border-border hover:border-primary/50 hover:bg-muted/40 has-[:focus-visible]:ring-ring/50 flex w-full cursor-pointer flex-col items-center gap-1.5 rounded-md border border-dashed px-2 py-5 transition-colors has-[:focus-visible]:ring-2">
           <input

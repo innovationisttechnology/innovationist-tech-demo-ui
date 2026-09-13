@@ -13,10 +13,8 @@ import {
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 const TEXT_PART_ID = "text-0";
 
-// Server-side tracing of the raw backend SSE, so the HITL contract can be read
-// off the terminal while it is still being built out. `event:` names and frames
-// the schemas reject are the interesting ones — an approval frame the frontend
-// has no variant for is otherwise dropped in silence.
+// Server-side tracing of the raw backend SSE. Frames the schemas reject are
+// the interesting ones: without this they are dropped in silence.
 const LOG_PREFIX = "[ziza stream]";
 const MAX_LOGGED_PAYLOAD_CHARS = 500;
 
@@ -26,18 +24,11 @@ const truncate = (payload: string) =>
     : `${payload.slice(0, MAX_LOGGED_PAYLOAD_CHARS)}… (+${payload.length - MAX_LOGGED_PAYLOAD_CHARS} chars)`;
 
 /**
- * Protocol translator: the demo API speaks its own SSE dialect, the AI SDK's
- * `useChat` speaks UI message streams. This route is the only place that knows
- * both.
+ * Protocol translator: the demo API speaks its own SSE dialect, `useChat`
+ * speaks UI message streams. This route is the only place that knows both.
  *
- * Two frame shapes are handled:
- *   `{"chunk": "..."}`  — today's backend output, becomes a text delta.
- *   `{"type": "...", …}` — the Phase 2 contract (intent / tool_call /
- *                          chunk_retrieved / error), forwarded as a transient
- *                          `data-ziza` part for the inspector panel.
- *
- * The second shape isn't emitted by the backend yet. Parsing it now is what
- * makes Phase 5 a backend-only change.
+ * `{"chunk": "..."}` becomes a text delta; every other frame is forwarded as a
+ * transient `data-ziza` part.
  */
 export async function POST(incomingRequest: Request) {
   const body = await incomingRequest.json().catch(() => null);
@@ -136,8 +127,6 @@ export async function POST(incomingRequest: Request) {
         );
       };
 
-      // An SSE frame is an `event:` line followed by its `data:` line, so the
-      // name is carried forward to the frame it labels.
       let pendingEventName: string | undefined;
 
       while (true) {
