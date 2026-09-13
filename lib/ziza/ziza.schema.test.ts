@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import { toPendingCall } from "./ziza.mapper";
-import { ZizaAgentEventSchema, ZizaTextFrameSchema } from "./ziza.schema";
+import {
+  KnowledgeIngestResponseSchema,
+  KnowledgeSuggestionsResponseSchema,
+  ZizaAgentEventSchema,
+  ZizaTextFrameSchema,
+} from "./ziza.schema";
 
 // Verbatim from the backend SSE. A frame that matches neither schema is
 // dropped in the route handler, which is invisible from the browser — these
@@ -190,6 +195,142 @@ describe("the suggestions frame", () => {
       suggestions: [{ kind: "add_page", label: "Upload", message: "help" }],
     });
     expect(parsed.success).toBe(true);
+  });
+});
+
+describe("the ingest response", () => {
+  const INGEST_RESPONSE = {
+    session_id: "s1",
+    source: "handbook.pdf",
+    chunks_ingested: 12,
+    searchable: true,
+    images_described: 2,
+    images_failed: 0,
+    documents_used: 1,
+    documents_allowed: 5,
+    pages_summarised: 0,
+  };
+
+  // The backend does not generate starter questions yet, so today's responses
+  // omit the field entirely and must still parse.
+  it("parses without the suggestions the backend has yet to send", () => {
+    const parsed = KnowledgeIngestResponseSchema.safeParse(INGEST_RESPONSE);
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.suggestions).toEqual([]);
+  });
+
+  it("carries starter questions once they arrive", () => {
+    const parsed = KnowledgeIngestResponseSchema.parse({
+      ...INGEST_RESPONSE,
+      suggestions: [
+        {
+          kind: "ask",
+          label: "What happens if the release captain is on leave?",
+          message: "What happens if the release captain is on leave?",
+        },
+      ],
+    });
+    expect(parsed.suggestions).toHaveLength(1);
+    expect(parsed.suggestions[0].kind).toBe("ask");
+  });
+});
+
+// Verbatim from a real 201. The `"url": null` here is the whole point: a bare
+// `.optional()` rejects null, which failed the entire response — so a stored
+// document surfaced as "Failed (201)" and its questions were thrown away.
+describe("a real ingest response", () => {
+  const LIVE_RESPONSE = {
+    session_id: "769fec48-95d5-4fb9-ae00-9700798066b4",
+    source: "Screenshot 2026-09-12 at 3.29.46 PM.png",
+    chunks_ingested: 1,
+    images_described: 1,
+    pages_summarised: 0,
+    documents_used: 2,
+    documents_allowed: 10,
+    images_failed: 0,
+    searchable: true,
+    suggestions: [
+      {
+        kind: "ask",
+        label:
+          "What file formats does the AI chatbot accept for source uploads?",
+        message:
+          "What file formats does the AI chatbot accept for source uploads?",
+        url: null,
+      },
+      {
+        kind: "ask",
+        label:
+          "What is the localhost port and path for this AI chatbot interface?",
+        message:
+          "What is the localhost port and path for this AI chatbot interface?",
+        url: null,
+      },
+    ],
+  };
+
+  it("parses, rather than failing the upload over a null url", () => {
+    const parsed = KnowledgeIngestResponseSchema.safeParse(LIVE_RESPONSE);
+    expect(parsed.success).toBe(true);
+  });
+
+  it("keeps both starter questions", () => {
+    const parsed = KnowledgeIngestResponseSchema.parse(LIVE_RESPONSE);
+    expect(parsed.suggestions).toHaveLength(2);
+    expect(parsed.suggestions[0].kind).toBe("ask");
+  });
+
+  it("carries session capacity through", () => {
+    const parsed = KnowledgeIngestResponseSchema.parse(LIVE_RESPONSE);
+    expect(parsed.documents_used).toBe(2);
+    expect(parsed.documents_allowed).toBe(10);
+  });
+
+  it("still accepts a suggestion whose url is simply absent", () => {
+    const parsed = KnowledgeIngestResponseSchema.safeParse({
+      ...LIVE_RESPONSE,
+      suggestions: [{ kind: "ask", label: "Why?", message: "Why?" }],
+    });
+    expect(parsed.success).toBe(true);
+  });
+});
+
+describe("the starter-question recovery read", () => {
+  it("carries the document its questions are about", () => {
+    const parsed = KnowledgeSuggestionsResponseSchema.parse({
+      session_id: "s1",
+      document: "handbook.pdf",
+      suggestions: [
+        {
+          kind: "ask",
+          label: "What happens if the release captain is on leave?",
+          message: "What happens if the release captain is on leave?",
+        },
+      ],
+    });
+    expect(parsed.document).toBe("handbook.pdf");
+    expect(parsed.suggestions).toHaveLength(1);
+  });
+
+  // A session with nothing in it, and a document nothing could be asked about,
+  // are both normal answers rather than failures.
+  it("accepts an empty session", () => {
+    const parsed = KnowledgeSuggestionsResponseSchema.parse({
+      session_id: "s1",
+      document: null,
+      suggestions: [],
+    });
+    expect(parsed.document).toBeNull();
+    expect(parsed.suggestions).toEqual([]);
+  });
+
+  it("accepts a document that yielded no questions", () => {
+    const parsed = KnowledgeSuggestionsResponseSchema.parse({
+      session_id: "s1",
+      document: "login-wall.html",
+      suggestions: [],
+    });
+    expect(parsed.suggestions).toEqual([]);
   });
 });
 

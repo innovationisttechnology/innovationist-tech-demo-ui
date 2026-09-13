@@ -55,7 +55,13 @@ export const ZizaSuggestionSchema = z
     kind: z.string(),
     label: z.string(),
     message: z.string(),
-    url: z.string().optional(),
+    // Nullish, not optional: the backend sends an explicit `"url": null` on
+    // kinds that have no page behind them, and a bare `.optional()` rejects
+    // null — which failed the whole response, not just this field.
+    url: z.string().nullish(),
+    // A short topic ("Scope", "Stack"), rendered as the card's coloured label.
+    // Not sent yet; the card simply omits the line without it.
+    category: z.string().nullish(),
   })
   .loose();
 
@@ -87,6 +93,25 @@ export const KnowledgeIngestResponseSchema = z.object({
   // 0 or 1 — set when a page-level overview is indexed alongside a page's own
   // chunked text. File uploads leave it at 0.
   pages_summarised: z.number().default(0),
+  // Starter questions answerable from the document just ingested. The response
+  // arriving IS the signal that they are ready — there is no second async step
+  // to wait on, which is also why this response is now a second or two slower.
+  //
+  // Often empty, and that is a real answer: a login wall or an error page holds
+  // nothing specific enough to ask about. Defaulted so an older backend still
+  // parses.
+  suggestions: z.array(ZizaSuggestionSchema).default([]),
+});
+
+// The recovery read for starter questions, covering the two cases the ingest
+// response cannot: the visitor reloads before asking anything, or the upload
+// request dies after the work completed. Only ever the most recently added
+// document — three uploads give three questions, not nine.
+export const KnowledgeSuggestionsResponseSchema = z.object({
+  session_id: z.string(),
+  // Null when the session holds nothing yet.
+  document: z.string().nullable(),
+  suggestions: z.array(ZizaSuggestionSchema).default([]),
 });
 
 export const KnowledgeClearResponseSchema = z.object({

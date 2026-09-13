@@ -4,7 +4,6 @@ import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import { PaperPlaneRightIcon, RobotIcon } from "@phosphor-icons/react";
 
-import { Button } from "@/components/ui/button";
 import {
   Empty,
   EmptyDescription,
@@ -16,6 +15,8 @@ import { Kbd } from "@/components/ui/kbd";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { type PendingCall, type Suggestion } from "@/lib/ziza/ziza.types";
 import { DeferredCallCard } from "./deferred-call-card";
+import { StarterQuestions } from "./starter-questions";
+import { SuggestionChips } from "./suggestion-chips";
 
 export type ChatTurn = {
   id: string;
@@ -29,9 +30,13 @@ type ChatPanelProps = {
   isReady: boolean;
   errorMessage?: string;
   pendingCalls: readonly PendingCall[];
-  // Offered when retrieval found nothing. Clicking one sends its `message` as
-  // an ordinary chat message — there is no separate endpoint behind a chip.
+  // Offers about the last turn: `add_page` when retrieval found nothing,
+  // `ask` when it found something worth following. Clicking one sends its
+  // `message` as an ordinary chat message — no separate endpoint behind a chip.
   suggestions: readonly Suggestion[];
+  // Questions answerable from a document that was just added. Not tied to a
+  // turn, so they keep their own slot rather than sharing the one above.
+  starterQuestions: readonly Suggestion[];
   // Which card is mid-request, so only that one shows as busy.
   resolvingCallId: string | null;
   onSendAction: (message: string) => void;
@@ -50,12 +55,17 @@ export function ChatPanel({
   errorMessage,
   pendingCalls,
   suggestions,
+  starterQuestions,
   resolvingCallId,
   onSendAction,
   onApprovalDecisionAction,
   onLinkSelectionAction,
   onDismissCallAction,
 }: ChatPanelProps) {
+  // Same gate as the turn-level chips: a click mid-stream would cut the answer
+  // off, since chips call onSendAction directly rather than through handleSend.
+  const showStarterQuestions = starterQuestions.length > 0 && !isStreaming;
+
   const [draft, setDraft] = useState("");
   const [notice, setNotice] = useState("");
   const scrollAreaRef = useRef<HTMLDivElement>(null);
@@ -123,7 +133,15 @@ export function ChatPanel({
 
       <ScrollArea ref={scrollAreaRef} className="min-h-0 flex-1">
         <div className="space-y-4 p-4" role="log" aria-live="polite">
-          {turns.length === 0 ? (
+          {turns.length === 0 && showStarterQuestions ? (
+            // The zero-state card exists to fill an empty pane and say what to
+            // do. Real questions do that better, so they replace it outright
+            // rather than sitting under a prompt to ask something.
+            <StarterQuestions
+              questions={starterQuestions}
+              onSendAction={onSendAction}
+            />
+          ) : turns.length === 0 ? (
             <Empty className="py-16">
               <EmptyHeader>
                 <EmptyMedia variant="icon">
@@ -184,29 +202,28 @@ export function ChatPanel({
                   </div>
 
                   {showSuggestions ? (
-                    <div className="space-y-1.5">
-                      <p className="text-muted-foreground font-mono text-[0.625rem] tracking-widest uppercase">
-                        try instead
-                      </p>
-                      <div className="flex flex-wrap gap-2">
-                        {suggestions.map((suggestion) => (
-                          <Button
-                            key={`${suggestion.kind}:${suggestion.label}`}
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            onClick={() => onSendAction(suggestion.message)}
-                          >
-                            {suggestion.label}
-                          </Button>
-                        ))}
-                      </div>
-                    </div>
+                    <SuggestionChips
+                      suggestions={suggestions}
+                      onSendAction={onSendAction}
+                    />
                   ) : null}
                 </div>
               );
             })
           )}
+
+          {/*
+            An upload that finishes mid-conversation has nothing to do with the
+            last reply, so this stands on its own rather than hanging off a
+            turn. It clears on the next send like every other optional offer —
+            one rule for all of them is what makes ignoring one feel free.
+          */}
+          {turns.length > 0 && showStarterQuestions ? (
+            <StarterQuestions
+              questions={starterQuestions}
+              onSendAction={onSendAction}
+            />
+          ) : null}
 
           {/*
             The run is parked server-side holding these calls, so these are

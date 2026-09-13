@@ -2,9 +2,14 @@ import { type z } from "zod";
 
 import {
   type KnowledgeIngestResponseSchema,
+  type KnowledgeSuggestionsResponseSchema,
   type ZizaPendingCallSchema,
 } from "./ziza.schema";
-import { type KnowledgeIngestResult, type PendingCall } from "./ziza.types";
+import {
+  type KnowledgeIngestResult,
+  type PendingCall,
+  type StarterQuestions,
+} from "./ziza.types";
 
 export const toKnowledgeIngestResult = (
   apiResult: z.infer<typeof KnowledgeIngestResponseSchema>,
@@ -18,6 +23,7 @@ export const toKnowledgeIngestResult = (
   documentsUsed: apiResult.documents_used,
   documentsAllowed: apiResult.documents_allowed,
   pagesSummarised: apiResult.pages_summarised,
+  suggestions: apiResult.suggestions,
 });
 
 // Whose call this is belongs to the backend — the tool knows what it does —
@@ -56,3 +62,10 @@ export const toPendingCall = (
     slotsLeft: details.slots_left,
   };
 };
+
+export const toStarterQuestions = (
+  apiResult: z.infer<typeof KnowledgeSuggestionsResponseSchema>,
+): StarterQuestions => ({
+  document: apiResult.document,
+  suggestions: apiResult.suggestions,
+});

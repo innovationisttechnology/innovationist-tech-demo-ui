@@ -177,6 +177,9 @@ type SourcesPanelProps = {
   activeSourceLabels: readonly string[];
   isReady: boolean;
   elapsedTick: number;
+  // Server-side capacity from the last ingest. Authoritative in a way the row
+  // count is not: documents added by a tool call never passed through here.
+  capacity?: { used: number; allowed: number };
   onAddFileAction: (file: File) => void;
   onClearAllAction: () => void;
 };
@@ -186,6 +189,7 @@ export function SourcesPanel({
   activeSourceLabels,
   isReady,
   elapsedTick,
+  capacity,
   onAddFileAction,
   onClearAllAction,
 }: SourcesPanelProps) {
@@ -212,10 +216,6 @@ export function SourcesPanel({
     return () => clearInterval(rotation);
   }, [isEmpty]);
 
-  // Selecting the files IS the action — there is no second "upload" step to
-  // confirm, because picking a document is already an unambiguous request to
-  // add it. Each file is sent on its own: there is no batch endpoint, and one
-  // oversized file shouldn't stop the others.
   // A file dropped anywhere else on the page navigates the tab to it, which
   // silently ends the session. Nothing else here accepts a drop, so refusing
   // it document-wide costs nothing and saves the visitor's work.
@@ -342,7 +342,19 @@ export function SourcesPanel({
       <header className="border-border text-muted-foreground flex shrink-0 items-center justify-between border-b px-3 py-2.5 font-mono text-[0.625rem] tracking-widest uppercase">
         <span>Sources</span>
         <span className="flex items-center gap-2">
-          {sources.length > 0 ? <span>{sources.length}</span> : null}
+          {capacity ? (
+            <span
+              className={
+                capacity.used >= capacity.allowed
+                  ? "text-destructive"
+                  : undefined
+              }
+            >
+              {capacity.used}/{capacity.allowed}
+            </span>
+          ) : sources.length > 0 ? (
+            <span>{sources.length}</span>
+          ) : null}
           {sources.length > 0 ? (
             <button
               type="button"

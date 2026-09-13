@@ -2,10 +2,15 @@ import { type z } from "zod";
 
 import { request } from "@/lib/api/request";
 
-import { toKnowledgeIngestResult, toPendingCall } from "./ziza.mapper";
+import {
+  toKnowledgeIngestResult,
+  toPendingCall,
+  toStarterQuestions,
+} from "./ziza.mapper";
 import {
   KnowledgeClearResponseSchema,
   KnowledgeIngestResponseSchema,
+  KnowledgeSuggestionsResponseSchema,
   ZizaChatResponseSchema,
 } from "./ziza.schema";
 import {
@@ -13,6 +18,7 @@ import {
   type DeferralResult,
   type KnowledgeIngestFailure,
   type KnowledgeIngestResult,
+  type StarterQuestions,
 } from "./ziza.types";
 
 // Resource module for `/api/ziza`: every function calls `request()` with a
@@ -170,6 +176,23 @@ export function isIngestFailure(
 ): result is KnowledgeIngestFailure {
   return "status" in result;
 }
+
+// Reads back the starter questions for the session's most recently added
+// document.
+//
+// A recovery path, not the primary one: the ingest response already carries
+// these, so this is only for when that response never arrived — a reload before
+// the visitor asked anything, or an upload whose request died after the work
+// completed. Never poll it.
+export const fetchStarterQuestions = async (
+  sessionId: string,
+): Promise<StarterQuestions | null> => {
+  const { data, ok } = await request(
+    `/ziza/knowledge/${encodeURIComponent(sessionId)}/suggestions`,
+    KnowledgeSuggestionsResponseSchema,
+  );
+  return ok && data ? toStarterQuestions(data) : null;
+};
 
 // Drops every chunk for this session. Returns the number deleted, or null on failure.
 export const clearKnowledge = async (

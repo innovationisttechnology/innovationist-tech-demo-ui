@@ -10,6 +10,9 @@ export type KnowledgeIngestResult = {
   documentsUsed: number;
   documentsAllowed: number;
   pagesSummarised: number;
+  // Questions answerable from this document, ready the moment this response
+  // lands. Empty until the backend generates them.
+  suggestions: readonly Suggestion[];
 };
 
 // Ingest rejections carry a reason: 413 too large, 415 unextractable, 422
@@ -99,15 +102,29 @@ export type KnowledgeSource = {
   errorDetail?: string;
 };
 
-// An offer to try something else, shown as a chip under the last reply when
-// retrieval found nothing. Clicking one sends `message` as an ordinary chat
-// message — `label` is only what the chip reads.
+// An optional offer, rendered as a chip. `add_page` follows a reply that found
+// nothing, `ask` follows one that found something worth following, and an
+// ingest response carries starter questions about the document just added.
+// Clicking one sends `message` as an ordinary chat message — `label` is only
+// what the chip reads.
 export type Suggestion = {
   // Open-ended by design: unrecognised kinds still render and still send.
   kind: string;
   label: string;
   message: string;
-  url?: string;
+  // Null when the suggestion has no page behind it, which is most of them.
+  url?: string | null;
+  // Short topic label for the starter-question cards. Absent today.
+  category?: string | null;
+};
+
+// Starter questions read back for a session, rather than received from the
+// upload that produced them. `document` names which one they are about, which
+// is what makes it possible to tell whether a failed-looking upload actually
+// landed.
+export type StarterQuestions = {
+  document: string | null;
+  suggestions: readonly Suggestion[];
 };
 
 export type InspectorEntryLevel = "open" | "info" | "tool" | "error" | "done";

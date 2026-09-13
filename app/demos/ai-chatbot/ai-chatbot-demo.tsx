@@ -31,6 +31,7 @@ import {
 import {
   ZIZA_STREAM_ROUTE,
   clearKnowledge,
+  fetchStarterQuestions,
   ingestFile,
   isDeferralFailure,
   isIngestFailure,
@@ -104,6 +105,17 @@ export function AiChatbotDemo() {
   const [pendingCalls, setPendingCalls] = useState<readonly PendingCall[]>([]);
   const [resolvingCallId, setResolvingCallId] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<readonly Suggestion[]>([]);
+  // Its own slot, not a `kind` filter on the array above. The two turn-level
+  // kinds are mutually exclusive so they can share one, but an upload can
+  // finish mid-conversation while an unclicked chip is still showing — one
+  // slot means one silently wipes the other.
+  const [starterQuestions, setStarterQuestions] = useState<
+    readonly Suggestion[]
+  >([]);
+  const [capacity, setCapacity] = useState<{
+    used: number;
+    allowed: number;
+  } | null>(null);
   const nextEntryId = useRef(0);
   const nextChunkId = useRef(0);
   const isDesktop = useMediaQuery("(min-width: 1024px)");
@@ -152,6 +164,19 @@ export function AiChatbotDemo() {
         if (isActive && id) {
           setSessionId(id);
           pushEntry("info", "session.ready", id);
+          // Covers the reload case: the upload response that carried these is
+          // long gone, but the questions outlived it. One read, never polled.
+          void fetchStarterQuestions(id).then((recovered) => {
+            if (!isActive || !recovered || recovered.suggestions.length === 0) {
+              return;
+            }
+            setStarterQuestions(recovered.suggestions);
+            pushEntry(
+              "info",
+              "starter_questions.recovered",
+              recovered.document ?? undefined,
+            );
+          });
         }
       })
       .catch(() => {
@@ -340,8 +365,11 @@ export function AiChatbotDemo() {
       setChunks([]);
       setActiveSourceLabels([]);
       // Same reasoning as the superseded calls below: an offer made about the
-      // previous question has no standing once a new one is asked.
+      // previous question has no standing once a new one is asked. Starter
+      // questions go too — one rule for every optional offer is what makes
+      // ignoring any of them feel free.
       setSuggestions([]);
+      setStarterQuestions([]);
       // A new message supersedes unanswered calls: the tool calls they belong
       // to are a turn back by the time the answer lands, so the cards would be
       // offering decisions that no longer fit the conversation.
@@ -520,6 +548,26 @@ export function AiChatbotDemo() {
 
       void ingestFile(sessionId, file).then((result) => {
         if (isIngestFailure(result)) {
+          // A 2xx here means the server stored the document and only the
+          // response body failed to parse. The upload did not fail, so the row
+          // must not say it did — but the mismatch is a real bug, and burying
+          // it as "Failed (201)" is how it stays unnoticed.
+          if (result.status >= 200 && result.status < 300) {
+            setSources((current) =>
+              current.map((source) =>
+                source.id === sourceId
+                  ? { ...source, status: "indexed", startedAt: undefined }
+                  : source,
+              ),
+            );
+            pushEntry(
+              "error",
+              "knowledge.response_unreadable",
+              `${file.name}: stored (${result.status}), but the response did not match the expected shape`,
+            );
+            return;
+          }
+
           const message = failureMessage(
             UPLOAD_FAILURE_MESSAGE,
             result.status,
@@ -542,6 +590,36 @@ export function AiChatbotDemo() {
             "knowledge.upload_failed",
             `${file.name}: ${message}`,
           );
+
+          // 503 is what `request()` reports for a network error or timeout, so
+          // the work may well have completed with only the reply lost. Every
+          // other status is the server refusing the file outright, where
+          // nothing was ingested and there is nothing to recover.
+          if (result.status === 503) {
+            void fetchStarterQuestions(sessionId).then((recovered) => {
+              if (!recovered || recovered.document !== file.name) {
+                return;
+              }
+              // The document is there, so the row saying "failed" is wrong.
+              setSources((current) =>
+                current.map((source) =>
+                  source.id === sourceId
+                    ? {
+                        ...source,
+                        status: "indexed",
+                        errorDetail: undefined,
+                      }
+                    : source,
+                ),
+              );
+              setStarterQuestions(recovered.suggestions);
+              pushEntry(
+                "info",
+                "knowledge.upload_recovered",
+                `${file.name} landed despite the lost response`,
+              );
+            });
+          }
           return;
         }
 
@@ -560,6 +638,20 @@ export function AiChatbotDemo() {
               : source,
           ),
         );
+        setCapacity({
+          used: result.documentsUsed,
+          allowed: result.documentsAllowed,
+        });
+        // Replace, never accumulate: each ingest carries its own set, and one
+        // visible set of at most three is the whole point.
+        setStarterQuestions(result.suggestions);
+        if (result.suggestions.length > 0) {
+          pushEntry(
+            "info",
+            "starter_questions.offered",
+            result.suggestions.map((question) => question.label).join(", "),
+          );
+        }
         pushEntry(
           result.imagesFailed > 0 ? "error" : "info",
           "knowledge.indexed",
@@ -574,6 +666,7 @@ export function AiChatbotDemo() {
     void clearKnowledge(sessionId).then((deleted) => {
       setSources([]);
       setActiveSourceLabels([]);
+      setCapacity(null);
       pushEntry(
         deleted === null ? "error" : "info",
         deleted === null ? "knowledge.clear_failed" : "knowledge.cleared",
@@ -588,6 +681,7 @@ export function AiChatbotDemo() {
       activeSourceLabels={activeSourceLabels}
       isReady={isReady}
       elapsedTick={elapsedTick}
+      capacity={capacity ?? undefined}
       onAddFileAction={handleAddFile}
       onClearAllAction={handleClearSources}
     />
@@ -612,6 +706,7 @@ export function AiChatbotDemo() {
       errorMessage={error?.message}
       pendingCalls={pendingCalls}
       suggestions={suggestions}
+      starterQuestions={starterQuestions}
       resolvingCallId={resolvingCallId}
       onSendAction={handleSend}
       onApprovalDecisionAction={handleApprovalDecision}
