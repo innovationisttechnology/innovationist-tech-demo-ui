@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import { toPendingCall } from "./ziza.mapper";
-import { ZizaAgentEventSchema, ZizaTextFrameSchema } from "./ziza.schema";
+import { toChatHistoryPage, toSessionSources } from "./ziza.mapper";
+import {
+  ChatHistoryResponseSchema,
+  KnowledgeIngestResponseSchema,
+  KnowledgeSourcesResponseSchema,
+  KnowledgeSuggestionsResponseSchema,
+  ZizaAgentEventSchema,
+  ZizaTextFrameSchema,
+} from "./ziza.schema";
 
 // Verbatim from the backend SSE. A frame that matches neither schema is
 // dropped in the route handler, which is invisible from the browser — these
@@ -190,6 +198,268 @@ describe("the suggestions frame", () => {
       suggestions: [{ kind: "add_page", label: "Upload", message: "help" }],
     });
     expect(parsed.success).toBe(true);
+  });
+});
+
+describe("the ingest response", () => {
+  const INGEST_RESPONSE = {
+    session_id: "s1",
+    source: "handbook.pdf",
+    chunks_ingested: 12,
+    searchable: true,
+    images_described: 2,
+    images_failed: 0,
+    documents_used: 1,
+    documents_allowed: 5,
+    pages_summarised: 0,
+  };
+
+  // The backend does not generate starter questions yet, so today's responses
+  // omit the field entirely and must still parse.
+  it("parses without the suggestions the backend has yet to send", () => {
+    const parsed = KnowledgeIngestResponseSchema.safeParse(INGEST_RESPONSE);
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.suggestions).toEqual([]);
+  });
+
+  it("carries starter questions once they arrive", () => {
+    const parsed = KnowledgeIngestResponseSchema.parse({
+      ...INGEST_RESPONSE,
+      suggestions: [
+        {
+          kind: "ask",
+          label: "What happens if the release captain is on leave?",
+          message: "What happens if the release captain is on leave?",
+        },
+      ],
+    });
+    expect(parsed.suggestions).toHaveLength(1);
+    expect(parsed.suggestions[0].kind).toBe("ask");
+  });
+});
+
+// Verbatim from a real 201. The `"url": null` here is the whole point: a bare
+// `.optional()` rejects null, which failed the entire response — so a stored
+// document surfaced as "Failed (201)" and its questions were thrown away.
+describe("a real ingest response", () => {
+  const LIVE_RESPONSE = {
+    session_id: "769fec48-95d5-4fb9-ae00-9700798066b4",
+    source: "Screenshot 2026-09-12 at 3.29.46 PM.png",
+    chunks_ingested: 1,
+    images_described: 1,
+    pages_summarised: 0,
+    documents_used: 2,
+    documents_allowed: 10,
+    images_failed: 0,
+    searchable: true,
+    suggestions: [
+      {
+        kind: "ask",
+        label:
+          "What file formats does the AI chatbot accept for source uploads?",
+        message:
+          "What file formats does the AI chatbot accept for source uploads?",
+        url: null,
+      },
+      {
+        kind: "ask",
+        label:
+          "What is the localhost port and path for this AI chatbot interface?",
+        message:
+          "What is the localhost port and path for this AI chatbot interface?",
+        url: null,
+      },
+    ],
+  };
+
+  it("parses, rather than failing the upload over a null url", () => {
+    const parsed = KnowledgeIngestResponseSchema.safeParse(LIVE_RESPONSE);
+    expect(parsed.success).toBe(true);
+  });
+
+  it("keeps both starter questions", () => {
+    const parsed = KnowledgeIngestResponseSchema.parse(LIVE_RESPONSE);
+    expect(parsed.suggestions).toHaveLength(2);
+    expect(parsed.suggestions[0].kind).toBe("ask");
+  });
+
+  it("carries session capacity through", () => {
+    const parsed = KnowledgeIngestResponseSchema.parse(LIVE_RESPONSE);
+    expect(parsed.documents_used).toBe(2);
+    expect(parsed.documents_allowed).toBe(10);
+  });
+
+  it("still accepts a suggestion whose url is simply absent", () => {
+    const parsed = KnowledgeIngestResponseSchema.safeParse({
+      ...LIVE_RESPONSE,
+      suggestions: [{ kind: "ask", label: "Why?", message: "Why?" }],
+    });
+    expect(parsed.success).toBe(true);
+  });
+});
+
+describe("the starter-question recovery read", () => {
+  it("carries the document its questions are about", () => {
+    const parsed = KnowledgeSuggestionsResponseSchema.parse({
+      session_id: "s1",
+      document: "handbook.pdf",
+      suggestions: [
+        {
+          kind: "ask",
+          label: "What happens if the release captain is on leave?",
+          message: "What happens if the release captain is on leave?",
+        },
+      ],
+    });
+    expect(parsed.document).toBe("handbook.pdf");
+    expect(parsed.suggestions).toHaveLength(1);
+  });
+
+  // A session with nothing in it, and a document nothing could be asked about,
+  // are both normal answers rather than failures.
+  it("accepts an empty session", () => {
+    const parsed = KnowledgeSuggestionsResponseSchema.parse({
+      session_id: "s1",
+      document: null,
+      suggestions: [],
+    });
+    expect(parsed.document).toBeNull();
+    expect(parsed.suggestions).toEqual([]);
+  });
+
+  it("accepts a document that yielded no questions", () => {
+    const parsed = KnowledgeSuggestionsResponseSchema.parse({
+      session_id: "s1",
+      document: "login-wall.html",
+      suggestions: [],
+    });
+    expect(parsed.suggestions).toEqual([]);
+  });
+});
+
+describe("the chat history read", () => {
+  const HISTORY_PAGE = {
+    session_id: "769fec48-95d5-4fb9-ae00-9700798066b4",
+    turns: [
+      {
+        id: "68c4a1-0",
+        role: "user",
+        text: "who is Sarah?",
+        at: "2026-09-13T09:00:00Z",
+      },
+      {
+        id: "68c4a1-1",
+        role: "assistant",
+        text: "Sarah leads the platform team.",
+        at: "2026-09-13T09:00:00Z",
+      },
+    ],
+    has_more: true,
+    next_before: "2026-09-13T09:00:00Z",
+  };
+
+  it("maps turns in the order they render", () => {
+    const page = toChatHistoryPage(
+      ChatHistoryResponseSchema.parse(HISTORY_PAGE),
+    );
+    expect(page.turns.map((turn) => turn.role)).toEqual(["user", "assistant"]);
+    expect(page.turns[0].id).toBe("68c4a1-0");
+    expect(page.turns[1].text).toBe("Sarah leads the platform team.");
+  });
+
+  it("carries the cursor for the page before it", () => {
+    const page = toChatHistoryPage(
+      ChatHistoryResponseSchema.parse(HISTORY_PAGE),
+    );
+    expect(page.hasMore).toBe(true);
+    expect(page.nextBefore).toBe("2026-09-13T09:00:00Z");
+  });
+
+  // `next_before` is null on the last page; the cursor must read as absent
+  // rather than as the string "null".
+  it("normalises the end of the history to null", () => {
+    const page = toChatHistoryPage(
+      ChatHistoryResponseSchema.parse({
+        ...HISTORY_PAGE,
+        has_more: false,
+        next_before: null,
+      }),
+    );
+    expect(page.hasMore).toBe(false);
+    expect(page.nextBefore).toBeNull();
+  });
+
+  it("accepts a session with no conversation yet", () => {
+    const page = toChatHistoryPage(
+      ChatHistoryResponseSchema.parse({ session_id: "s1", turns: [] }),
+    );
+    expect(page.turns).toEqual([]);
+    expect(page.hasMore).toBe(false);
+    expect(page.nextBefore).toBeNull();
+  });
+});
+
+describe("the session sources read", () => {
+  const SOURCES_RESPONSE = {
+    session_id: "769fec48-95d5-4fb9-ae00-9700798066b4",
+    documents_used: 2,
+    documents_allowed: 10,
+    sources: [
+      {
+        document: "https://innovationisttech.com/",
+        kind: "url",
+        chunks: 4,
+        added_at: "2026-09-13T04:22:00Z",
+      },
+      {
+        document: "handbook.pdf",
+        kind: "file",
+        chunks: 9,
+        added_at: "2026-09-13T04:21:00Z",
+      },
+    ],
+  };
+
+  it("restores rows the panel can render", () => {
+    const restored = toSessionSources(
+      KnowledgeSourcesResponseSchema.parse(SOURCES_RESPONSE),
+    );
+    expect(restored.documentsUsed).toBe(2);
+    expect(restored.documentsAllowed).toBe(10);
+    expect(restored.sources).toHaveLength(2);
+    expect(
+      restored.sources.every((source) => source.status === "indexed"),
+    ).toBe(true);
+  });
+
+  it("orders them as they were added, not as they arrived", () => {
+    const restored = toSessionSources(
+      KnowledgeSourcesResponseSchema.parse(SOURCES_RESPONSE),
+    );
+    expect(restored.sources.map((source) => source.label)).toEqual([
+      "handbook.pdf",
+      "https://innovationisttech.com/",
+    ]);
+  });
+
+  // `document` is the identity the backend keys on, so rows key on it too.
+  it("keys rows on the document, not a generated id", () => {
+    const restored = toSessionSources(
+      KnowledgeSourcesResponseSchema.parse(SOURCES_RESPONSE),
+    );
+    expect(restored.sources[0].id).toBe("handbook.pdf");
+    expect(restored.sources[0].kind).toBe("file");
+    expect(restored.sources[1].kind).toBe("url");
+  });
+
+  it("accepts a session that holds nothing", () => {
+    const parsed = KnowledgeSourcesResponseSchema.parse({
+      session_id: "s1",
+      documents_used: 0,
+      documents_allowed: 10,
+      sources: [],
+    });
+    expect(toSessionSources(parsed).sources).toEqual([]);
   });
 });
 

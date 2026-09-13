@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useState, type ChangeEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type DragEvent,
+} from "react";
 import {
   FileArrowUpIcon,
   FileTextIcon,
@@ -43,12 +49,11 @@ const STATUS_CLASS: Record<KnowledgeSource["status"], string> = {
   failed: "text-rose-600 dark:text-rose-300",
 };
 
-// This panel only takes documents now, and everything else the demo can do
-// happens in the chat — which a panel with one file button has no way to say.
-// Rotating through it is the cheapest place to teach the model of the thing
-// without a wall of text nobody reads.
+// Rotating, because everything this demo can do beyond uploading happens in
+// the chat, and a panel with one file button has no way to say so.
 const EMPTY_HINTS = [
   "Upload a document to get started — text, Markdown, CSV, JSON, PDF, DOCX, or an image.",
+  "Drag files straight onto this panel, as many at once as you like.",
   "Paste a link in the chat instead, and Ziza offers to index that page along with the pages it links to.",
   "Answers come only from what is in here. Nothing added means nothing to answer from.",
   "Ask it to clear the knowledge base and it will ask you to confirm before anything is deleted.",
@@ -65,15 +70,8 @@ function formatMegabytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-/**
- * Client-side pre-checks mirroring the server's guards, so an obviously bad
- * file fails instantly instead of after a 25MB upload.
- *
- * The extension check is deliberately permissive: the server decides for real
- * by sniffing the file's bytes and never trusts a filename, so a valid PDF
- * named `.dat` must reach it rather than being blocked here. Only a recognised
- * wrong extension is rejected.
- */
+// Deliberately permissive on extension: the server decides by sniffing the
+// file's bytes, so a valid PDF named `.dat` must reach it.
 function validateFile(file: File): string | undefined {
   if (file.size === 0) {
     return "There is nothing in that file.";
@@ -144,11 +142,27 @@ function SourceIcon({
   );
 }
 
+function carriesFiles(transfer: DataTransfer | null): boolean {
+  return transfer !== null && Array.from(transfer.types).includes("Files");
+}
+
+// `webkitGetAsEntry` is only valid synchronously inside the drop handler — the
+// items are neutered the moment it returns — so this cannot be deferred.
+function droppedFolderNames(transfer: DataTransfer): string[] {
+  return Array.from(transfer.items)
+    .map((item) => item.webkitGetAsEntry?.() ?? null)
+    .filter(
+      (entry): entry is FileSystemEntry => entry !== null && entry.isDirectory,
+    )
+    .map((entry) => entry.name);
+}
+
 type SourcesPanelProps = {
   sources: readonly KnowledgeSource[];
   activeSourceLabels: readonly string[];
   isReady: boolean;
   elapsedTick: number;
+  capacity?: { used: number; allowed: number };
   onAddFileAction: (file: File) => void;
   onClearAllAction: () => void;
 };
@@ -158,16 +172,19 @@ export function SourcesPanel({
   activeSourceLabels,
   isReady,
   elapsedTick,
+  capacity,
   onAddFileAction,
   onClearAllAction,
 }: SourcesPanelProps) {
   const [notice, setNotice] = useState("");
   const [hintIndex, setHintIndex] = useState(0);
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
+  // dragenter/dragleave re-fire for every descendant the pointer crosses, so a
+  // boolean would strobe the overlay. Depth does not.
+  const dragDepth = useRef(0);
 
   const isEmpty = sources.length === 0;
 
-  // Only ticks while the hints are on screen — an idle panel shouldn't be
-  // re-rendering forever behind a populated list.
   useEffect(() => {
     if (!isEmpty) {
       return;
@@ -179,17 +196,20 @@ export function SourcesPanel({
     return () => clearInterval(rotation);
   }, [isEmpty]);
 
-  // Selecting the files IS the action — there is no second "upload" step to
-  // confirm, because picking a document is already an unambiguous request to
-  // add it. Each file is sent on its own: there is no batch endpoint, and one
-  // oversized file shouldn't stop the others.
-  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const selected = Array.from(event.target.files ?? []);
-    // Clearing the input lets the same filename be re-picked after removal;
-    // without it the browser sees no change and never fires again.
-    event.target.value = "";
+  // A file dropped anywhere else on the page navigates the tab to it, ending
+  // the session. Nothing else here accepts a drop, so refuse it document-wide.
+  useEffect(() => {
+    const swallowDrop = (event: Event) => event.preventDefault();
+    window.addEventListener("dragover", swallowDrop);
+    window.addEventListener("drop", swallowDrop);
+    return () => {
+      window.removeEventListener("dragover", swallowDrop);
+      window.removeEventListener("drop", swallowDrop);
+    };
+  }, []);
 
-    if (selected.length === 0) {
+  function addFiles(files: readonly File[], folders: readonly string[] = []) {
+    if (files.length === 0 && folders.length === 0) {
       return;
     }
     if (!isReady) {
@@ -197,8 +217,10 @@ export function SourcesPanel({
       return;
     }
 
-    const rejected: string[] = [];
-    for (const file of selected) {
+    const rejected = folders.map(
+      (folder) => `${folder}: drop the files inside, not the folder.`,
+    );
+    for (const file of files) {
       const problem = validateFile(file);
       if (problem) {
         rejected.push(`${file.name}: ${problem}`);
@@ -209,15 +231,98 @@ export function SourcesPanel({
     setNotice(rejected.join(" "));
   }
 
+  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const selected = Array.from(event.target.files ?? []);
+    // Clearing the input lets the same filename be re-picked after removal;
+    // without it the browser sees no change and never fires again.
+    event.target.value = "";
+    addFiles(selected);
+  }
+
+  function handleDragEnter(event: DragEvent<HTMLElement>) {
+    if (!carriesFiles(event.dataTransfer)) {
+      return;
+    }
+    event.preventDefault();
+    dragDepth.current += 1;
+    setIsDraggingOver(true);
+  }
+
+  function handleDragOver(event: DragEvent<HTMLElement>) {
+    if (!carriesFiles(event.dataTransfer)) {
+      return;
+    }
+    // Without this the drop never fires and the browser opens the file.
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }
+
+  function handleDragLeave(event: DragEvent<HTMLElement>) {
+    if (!carriesFiles(event.dataTransfer)) {
+      return;
+    }
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) {
+      setIsDraggingOver(false);
+    }
+  }
+
+  function handleDrop(event: DragEvent<HTMLElement>) {
+    if (!carriesFiles(event.dataTransfer)) {
+      return;
+    }
+    event.preventDefault();
+    dragDepth.current = 0;
+    setIsDraggingOver(false);
+
+    const folders = droppedFolderNames(event.dataTransfer);
+    const files = Array.from(event.dataTransfer.files).filter(
+      (file) => !folders.includes(file.name),
+    );
+    addFiles(files, folders);
+  }
+
   return (
+    // The whole panel is the target, not just the picker: aiming at a small
+    // control is the part of dragging people get wrong.
     <section
-      className="flex h-full flex-col overflow-hidden"
+      className="relative flex h-full flex-col overflow-hidden"
       aria-label="Knowledge base sources"
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
     >
+      {/*
+        pointer-events-none is load-bearing: an overlay that takes pointer
+        events fires dragleave the instant it renders, and the highlight
+        strobes under the cursor.
+      */}
+      {isDraggingOver ? (
+        <div className="border-primary bg-background/85 pointer-events-none absolute inset-2 z-10 flex flex-col items-center justify-center gap-2 rounded-md border-2 border-dashed">
+          <FileArrowUpIcon weight="duotone" className="text-primary size-6" />
+          <span className="text-primary font-mono text-[0.625rem] tracking-widest uppercase">
+            Drop to add
+          </span>
+        </div>
+      ) : null}
+
       <header className="border-border text-muted-foreground flex shrink-0 items-center justify-between border-b px-3 py-2.5 font-mono text-[0.625rem] tracking-widest uppercase">
         <span>Sources</span>
         <span className="flex items-center gap-2">
-          {sources.length > 0 ? <span>{sources.length}</span> : null}
+          {capacity ? (
+            <span
+              className={
+                capacity.used >= capacity.allowed
+                  ? "text-destructive"
+                  : undefined
+              }
+            >
+              {capacity.used}/{capacity.allowed}
+            </span>
+          ) : sources.length > 0 ? (
+            <span>{sources.length}</span>
+          ) : null}
           {sources.length > 0 ? (
             <button
               type="button"
@@ -261,8 +366,7 @@ export function SourcesPanel({
               const isBusy =
                 source.status === "uploading" || source.status === "processing";
               const imageSummary = describeExtras(source);
-              // elapsedTick is a prop only so this re-renders each second while
-              // a long extraction runs — a minute of silence reads as hung.
+              // elapsedTick is a prop only to force the per-second re-render.
               const elapsedSeconds =
                 isBusy && source.startedAt
                   ? Math.max(
@@ -320,8 +424,7 @@ export function SourcesPanel({
       <div className="border-border shrink-0 space-y-2 border-t p-3">
         {/*
           The label wraps the input so there's a single control in the a11y
-          tree — a visually-hidden input beside a separate button would be
-          announced twice.
+          tree — a separate button beside a hidden input is announced twice.
         */}
         <label className="border-border hover:border-primary/50 hover:bg-muted/40 has-[:focus-visible]:ring-ring/50 flex w-full cursor-pointer flex-col items-center gap-1.5 rounded-md border border-dashed px-2 py-5 transition-colors has-[:focus-visible]:ring-2">
           <input
@@ -337,6 +440,9 @@ export function SourcesPanel({
           />
           <span className="text-muted-foreground max-w-full truncate font-sans text-xs">
             Add documents
+          </span>
+          <span className="text-muted-foreground/70 font-sans text-[0.6875rem]">
+            or drag them anywhere in this panel
           </span>
           <span className="text-muted-foreground/70 font-mono text-[0.625rem]">
             {`text · pdf · docx · images · ≤${formatMegabytes(MAX_UPLOAD_BYTES)}`}

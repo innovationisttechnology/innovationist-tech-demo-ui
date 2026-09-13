@@ -1,10 +1,15 @@
 "use client";
 
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 import ReactMarkdown from "react-markdown";
 import { PaperPlaneRightIcon, RobotIcon } from "@phosphor-icons/react";
 
-import { Button } from "@/components/ui/button";
 import {
   Empty,
   EmptyDescription,
@@ -16,6 +21,8 @@ import { Kbd } from "@/components/ui/kbd";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { type PendingCall, type Suggestion } from "@/lib/ziza/ziza.types";
 import { DeferredCallCard } from "./deferred-call-card";
+import { StarterQuestions } from "./starter-questions";
+import { SuggestionChips } from "./suggestion-chips";
 
 export type ChatTurn = {
   id: string;
@@ -29,12 +36,12 @@ type ChatPanelProps = {
   isReady: boolean;
   errorMessage?: string;
   pendingCalls: readonly PendingCall[];
-  // Offered when retrieval found nothing. Clicking one sends its `message` as
-  // an ordinary chat message — there is no separate endpoint behind a chip.
   suggestions: readonly Suggestion[];
+  starterQuestions: readonly Suggestion[];
   // Which card is mid-request, so only that one shows as busy.
   resolvingCallId: string | null;
   onSendAction: (message: string) => void;
+  onLoadOlderTurnsAction: () => void;
   onApprovalDecisionAction: (toolCallId: string, approved: boolean) => void;
   onLinkSelectionAction: (
     toolCallId: string,
@@ -50,31 +57,86 @@ export function ChatPanel({
   errorMessage,
   pendingCalls,
   suggestions,
+  starterQuestions,
   resolvingCallId,
   onSendAction,
+  onLoadOlderTurnsAction,
   onApprovalDecisionAction,
   onLinkSelectionAction,
   onDismissCallAction,
 }: ChatPanelProps) {
+  // Chips call onSendAction directly, bypassing handleSend's streaming guard,
+  // so a click mid-stream would cut the answer off.
+  const showStarterQuestions = starterQuestions.length > 0 && !isStreaming;
+
   const [draft, setDraft] = useState("");
   const [notice, setNotice] = useState("");
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const previousFirstTurnId = useRef<string | undefined>(undefined);
+  const previousScrollHeight = useRef(0);
+  const logRef = useRef<HTMLDivElement>(null);
 
-  // Scroll the viewport directly rather than calling `scrollIntoView` on a
-  // sentinel — that also scrolls ancestor scrollports, which yanks the whole
-  // page down on mount.
-  useEffect(() => {
-    if (turns.length === 0) {
-      return;
-    }
-    const viewport = scrollAreaRef.current?.querySelector<HTMLElement>(
+  const findViewport = () =>
+    scrollAreaRef.current?.querySelector<HTMLElement>(
       '[data-slot="scroll-area-viewport"]',
     );
-    if (viewport) {
+
+  // A layout effect, not a plain one: correcting scrollTop after paint shows a
+  // visible jump to the bottom before it lands. Scrolls the viewport directly
+  // rather than `scrollIntoView` on a sentinel, which also scrolls ancestor
+  // scrollports and drags the whole page down on mount.
+  useLayoutEffect(() => {
+    const viewport = findViewport();
+    if (!viewport || turns.length === 0) {
+      return;
+    }
+
+    const currentFirstId = turns[0]?.id;
+    const previousFirstId = previousFirstTurnId.current;
+    // The old first turn still being present is what separates a real prepend
+    // from the list being replaced wholesale.
+    const isPrepend =
+      previousFirstId !== undefined &&
+      currentFirstId !== previousFirstId &&
+      turns.some((turn) => turn.id === previousFirstId);
+
+    if (isPrepend) {
+      viewport.scrollTop +=
+        viewport.scrollHeight - previousScrollHeight.current;
+      // Older turns would otherwise be announced as if they had just been
+      // said. Set on the node rather than through state so it lands before the
+      // prepended children are painted, and is restored once they have been.
+      const log = logRef.current;
+      if (log) {
+        log.setAttribute("aria-live", "off");
+        requestAnimationFrame(() => log.setAttribute("aria-live", "polite"));
+      }
+    } else {
       viewport.scrollTop = viewport.scrollHeight;
     }
+
+    previousFirstTurnId.current = currentFirstId;
+    previousScrollHeight.current = viewport.scrollHeight;
   }, [turns, isStreaming, pendingCalls]);
+
+  // Fires on every qualifying scroll, which is safe: the parent owns the
+  // in-flight and has-more guards, so this is a no-op when there is nothing
+  // left to fetch. 200px rather than 0 so the page arrives before the reader
+  // reaches the physical top.
+  useEffect(() => {
+    const viewport = findViewport();
+    if (!viewport) {
+      return;
+    }
+    const handleScroll = () => {
+      if (viewport.scrollTop < 200) {
+        onLoadOlderTurnsAction();
+      }
+    };
+    viewport.addEventListener("scroll", handleScroll, { passive: true });
+    return () => viewport.removeEventListener("scroll", handleScroll);
+  }, [onLoadOlderTurnsAction]);
 
   // Controls stay enabled — clicking with invalid input explains what's wrong
   // instead of silently doing nothing. A disabled button gives screen-reader
@@ -122,8 +184,18 @@ export function ChatPanel({
       </header>
 
       <ScrollArea ref={scrollAreaRef} className="min-h-0 flex-1">
-        <div className="space-y-4 p-4" role="log" aria-live="polite">
-          {turns.length === 0 ? (
+        <div
+          ref={logRef}
+          className="space-y-4 p-4"
+          role="log"
+          aria-live="polite"
+        >
+          {turns.length === 0 && showStarterQuestions ? (
+            <StarterQuestions
+              questions={starterQuestions}
+              onSendAction={onSendAction}
+            />
+          ) : turns.length === 0 ? (
             <Empty className="py-16">
               <EmptyHeader>
                 <EmptyMedia variant="icon">
@@ -140,9 +212,6 @@ export function ChatPanel({
             </Empty>
           ) : (
             turns.map((turn, index) => {
-              // Only under the newest reply, and only once it has finished:
-              // chips appearing mid-stream invite a click that would cut the
-              // answer off.
               const showSuggestions =
                 suggestions.length > 0 &&
                 !isStreaming &&
@@ -184,35 +253,27 @@ export function ChatPanel({
                   </div>
 
                   {showSuggestions ? (
-                    <div className="space-y-1.5">
-                      <p className="text-muted-foreground font-mono text-[0.625rem] tracking-widest uppercase">
-                        try instead
-                      </p>
-                      <div className="flex flex-wrap gap-2">
-                        {suggestions.map((suggestion) => (
-                          <Button
-                            key={`${suggestion.kind}:${suggestion.label}`}
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            onClick={() => onSendAction(suggestion.message)}
-                          >
-                            {suggestion.label}
-                          </Button>
-                        ))}
-                      </div>
-                    </div>
+                    <SuggestionChips
+                      suggestions={suggestions}
+                      onSendAction={onSendAction}
+                    />
                   ) : null}
                 </div>
               );
             })
           )}
 
+          {/* Stands alone: a new document has nothing to do with the last reply. */}
+          {turns.length > 0 && showStarterQuestions ? (
+            <StarterQuestions
+              questions={starterQuestions}
+              onSendAction={onSendAction}
+            />
+          ) : null}
+
           {/*
-            The run is parked server-side holding these calls, so these are
-            real gates rather than courtesy prompts — nothing has run, and
-            nothing will until each one is answered. A run with several
-            outstanding resumes only once the last is done.
+            Real gates, not prompts: the run is parked server-side and resumes
+            only once every one of these is answered.
           */}
           {pendingCalls.map((call) => (
             <DeferredCallCard

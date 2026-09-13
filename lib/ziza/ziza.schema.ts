@@ -12,14 +12,6 @@ export const ZizaOfferedLinkSchema = z.object({
   text: z.string(),
 });
 
-// One tool call the run stopped on. `kind` says what it is waiting for:
-// `approval` is a yes/no gate that re-runs the tool body, `call` is deferred
-// for external execution — the result supplied from outside becomes the tool's
-// return value, so there is nothing to approve.
-//
-// `details` is whatever the tool passed to `ApprovalRequired`/`CallDeferred`
-// in `app/ziza_chat/tools/knowledge.py`, so it stays loose: the typed keys are
-// what today's two tools supply, and the next one must still validate.
 export const ZizaPendingCallSchema = z.object({
   tool_call_id: z.string(),
   tool_name: z.string(),
@@ -28,8 +20,6 @@ export const ZizaPendingCallSchema = z.object({
     .object({
       action: z.string().optional(),
       summary: z.string().optional(),
-      // Not sent yet. Honoured when it is, so the backend can decide how loud
-      // a gate should be instead of the UI guessing from the tool name.
       severity: z.enum(["destructive", "warning", "info"]).optional(),
       // `clear_knowledge_base`
       documents: z.array(z.string()).optional(),
@@ -43,19 +33,16 @@ export const ZizaPendingCallSchema = z.object({
     .default({}),
 });
 
-// An offer to try something else, sent when retrieval came back empty — the
-// scope gate refused, or the agent searched and found nothing. `label` is the
-// chip text; `message` is what gets sent as an ordinary chat message.
-//
-// `kind` is a backend enum with one member today but more are coming, so it is
-// an open string rather than a literal union: an unrecognised kind must still
-// parse, and falls back to sending `message`.
 export const ZizaSuggestionSchema = z
   .object({
     kind: z.string(),
     label: z.string(),
     message: z.string(),
-    url: z.string().optional(),
+    // Nullish, not optional: the backend sends an explicit `"url": null`, and
+    // `.optional()` rejects null — which failed the whole response, not just
+    // this field.
+    url: z.string().nullish(),
+    category: z.string().nullish(),
   })
   .loose();
 
@@ -63,11 +50,7 @@ export const ZizaChatResponseSchema = z.object({
   session_id: z.string(),
   response: z.string(),
   intent: z.string(),
-  // Everything still unanswered. A run resumes only once this is empty, so
-  // resolving one call can come back with the others still listed.
   pending_calls: z.array(ZizaPendingCallSchema).default([]),
-  // Only ever populated on `/chat` and `/chat/stream`; the resolution
-  // endpoints carry the field but never fill it.
   suggestions: z.array(ZizaSuggestionSchema).default([]),
 });
 
@@ -78,15 +61,62 @@ export const KnowledgeIngestResponseSchema = z.object({
   // False only when the vector index hadn't caught up within the ingest
   // timeout — the chunks are stored and become searchable shortly after.
   searchable: z.boolean(),
-  // Defaulted rather than required: a document with no images omits them.
   images_described: z.number().default(0),
   images_failed: z.number().default(0),
-  // Session capacity: documents held against the per-session cap.
   documents_used: z.number().default(0),
   documents_allowed: z.number().default(0),
-  // 0 or 1 — set when a page-level overview is indexed alongside a page's own
-  // chunked text. File uploads leave it at 0.
   pages_summarised: z.number().default(0),
+  // This response arriving IS the signal that they are ready — no second async
+  // step, which is why it is a second or two slower. Often empty.
+  suggestions: z.array(ZizaSuggestionSchema).default([]),
+});
+
+// Recovery read, for the two cases the ingest response cannot cover: a reload
+// before the visitor asked anything, or an upload whose request died after the
+// work completed. Only ever the most recently added document.
+export const KnowledgeSuggestionsResponseSchema = z.object({
+  session_id: z.string(),
+  document: z.string().nullable(),
+  suggestions: z.array(ZizaSuggestionSchema).default([]),
+});
+
+// One page of a stored conversation, newest page first. Ids are derived from
+// the stored turn rather than its position, so deduplicating across pages while
+// scrolling back is safe.
+export const ChatHistoryResponseSchema = z.object({
+  session_id: z.string(),
+  turns: z
+    .array(
+      z.object({
+        id: z.string(),
+        role: z.enum(["user", "assistant"]),
+        text: z.string(),
+        at: z.string(),
+      }),
+    )
+    .default([]),
+  has_more: z.boolean().default(false),
+  next_before: z.string().nullish(),
+});
+
+// The cold read of a session's documents, so a reload doesn't empty a panel
+// whose session still holds — and still answers from — them.
+export const KnowledgeSourcesResponseSchema = z.object({
+  session_id: z.string(),
+  documents_used: z.number().default(0),
+  documents_allowed: z.number().default(0),
+  sources: z
+    .array(
+      z.object({
+        // The document's identity, not its display label: a filename, or the
+        // URL as submitted rather than the one it redirected to.
+        document: z.string(),
+        kind: z.enum(["file", "url"]),
+        chunks: z.number().default(0),
+        added_at: z.string(),
+      }),
+    )
+    .default([]),
 });
 
 export const KnowledgeClearResponseSchema = z.object({
@@ -96,14 +126,9 @@ export const KnowledgeClearResponseSchema = z.object({
 
 // --- SSE stream envelope -----------------------------------------------------
 //
-// Two shapes arrive on the wire. `{"chunk": "..."}` is a text delta (the
-// backend tags it `chat.chunk`, but the route matches on the key). The
-// `type`-tagged variants are everything else.
-//
-// `chat.*` names below are live. The bare names (`intent`, `tool_call`,
-// `chunk_retrieved`, `error`) are the older agreed contract and have never
-// been emitted — they are kept so the inspector lights up the day they are,
-// without a frontend change.
+// The `chat.*` names are live. The bare ones (`intent`, `tool_call`,
+// `chunk_retrieved`, `error`) have never been emitted — kept so the inspector
+// works the day they are, with no frontend change.
 
 export const ZizaTextFrameSchema = z.object({ chunk: z.string() });
 
@@ -133,12 +158,6 @@ export const ZizaErrorEventSchema = z.object({
   message: z.string(),
 });
 
-// The two tagged frames the backend actually emits, one per unanswered call:
-// `chat.approval_required` for a gate, `chat.input_required` for a deferred
-// call needing a result. Note the naming split — stream event types are
-// namespaced `chat.*` server-side (`ChatStreamEvent.type` in
-// `app/ziza_chat/schemas.py`) while the Phase 2 variants above use bare names.
-// Both are accepted until the backend settles on one.
 export const ZizaApprovalRequiredEventSchema = z.object({
   type: z.literal("chat.approval_required"),
   pending_call: ZizaPendingCallSchema,
@@ -149,7 +168,6 @@ export const ZizaInputRequiredEventSchema = z.object({
   pending_call: ZizaPendingCallSchema,
 });
 
-// Sent instead of an answer when there was nothing to answer from.
 export const ZizaSuggestionsEventSchema = z.object({
   type: z.literal("chat.suggestions"),
   suggestions: z.array(ZizaSuggestionSchema),

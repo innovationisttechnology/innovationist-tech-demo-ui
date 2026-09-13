@@ -31,6 +31,9 @@ import {
 import {
   ZIZA_STREAM_ROUTE,
   clearKnowledge,
+  fetchChatHistory,
+  fetchSessionSources,
+  fetchStarterQuestions,
   ingestFile,
   isDeferralFailure,
   isIngestFailure,
@@ -38,6 +41,7 @@ import {
   resolveLinkSelection,
 } from "@/lib/ziza/ziza.service";
 import {
+  type ChatHistoryTurn,
   type InspectorEntry,
   type DeferralResult,
   type KnowledgeSource,
@@ -52,9 +56,7 @@ import { SourcesPanel } from "./sources-panel";
 const MAX_INSPECTOR_ENTRIES = 200;
 const ELAPSED_TICK_MS = 1000;
 
-// Extraction runs one vision call per embedded image, so a large PDF can hold
-// this single request open for minutes. Status codes come straight from
-// `app/ziza_chat/router.py`.
+// Status codes come straight from `app/ziza_chat/router.py`.
 const UPLOAD_FAILURE_MESSAGE: Record<number, string> = {
   413: "Too big. The cap is 25MB.",
   415: "We can't read that kind of file.",
@@ -62,9 +64,6 @@ const UPLOAD_FAILURE_MESSAGE: Record<number, string> = {
   503: "The knowledge base is offline right now.",
 };
 
-// 409 is the one worth wording carefully: the call was already answered, or
-// the paused run aged out, so re-clicking cannot help. 422 means a link was
-// submitted that this call never offered.
 const DEFERRAL_FAILURE_MESSAGE: Record<number, string> = {
   409: "That's no longer waiting on you. Ask again if you still want it.",
   422: "Some of those links weren't part of this offer.",
@@ -83,8 +82,13 @@ function formatTime(): string {
   return new Date().toLocaleTimeString("en-US", { hour12: false });
 }
 
-// The route handler forwards backend frames as `data-ziza` parts. Their shape is
-// only known at runtime, so narrow defensively rather than trusting a cast.
+const toUIMessage = (turn: ChatHistoryTurn): UIMessage => ({
+  id: turn.id,
+  role: turn.role,
+  parts: [{ type: "text", text: turn.text }],
+});
+
+// Shape is only known at runtime, so narrow rather than trusting a cast.
 function readEventType(payload: unknown): string | undefined {
   if (typeof payload !== "object" || payload === null) {
     return undefined;
@@ -104,13 +108,26 @@ export function AiChatbotDemo() {
   const [pendingCalls, setPendingCalls] = useState<readonly PendingCall[]>([]);
   const [resolvingCallId, setResolvingCallId] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<readonly Suggestion[]>([]);
+  // Its own slot, not a `kind` filter on the array above: an upload can finish
+  // while an unclicked turn-level chip is showing, and sharing would wipe it.
+  const [starterQuestions, setStarterQuestions] = useState<
+    readonly Suggestion[]
+  >([]);
+  const [capacity, setCapacity] = useState<{
+    used: number;
+    allowed: number;
+  } | null>(null);
   const nextEntryId = useRef(0);
   const nextChunkId = useRef(0);
+  // Refs, not state: the cursor is never rendered, and a scroll handler firing
+  // between renders must see the current value.
+  const nextHistoryBefore = useRef<string | null>(null);
+  const hasMoreHistory = useRef(false);
+  const isLoadingOlderTurns = useRef(false);
   const isDesktop = useMediaQuery("(min-width: 1024px)");
 
-  // Re-render once a second, but only while an upload is in flight — a long
-  // extraction with a frozen row reads as hung. Gated on `hasBusySource` so an
-  // idle panel isn't repainting forever.
+  // Only ticks while an upload is in flight: a long extraction with a frozen
+  // row reads as hung, but an idle panel shouldn't repaint forever.
   const [elapsedTick, setElapsedTick] = useState(() => Date.now());
   const hasBusySource = sources.some(
     (source) => source.status === "uploading" || source.status === "processing",
@@ -144,25 +161,6 @@ export function AiChatbotDemo() {
     },
     [],
   );
-
-  useEffect(() => {
-    let isActive = true;
-    getSessionId()
-      .then((id) => {
-        if (isActive && id) {
-          setSessionId(id);
-          pushEntry("info", "session.ready", id);
-        }
-      })
-      .catch(() => {
-        if (isActive) {
-          pushEntry("error", "session.failed", "IndexedDB unavailable");
-        }
-      });
-    return () => {
-      isActive = false;
-    };
-  }, [pushEntry]);
 
   const transport = useMemo(
     () =>
@@ -257,8 +255,8 @@ export function AiChatbotDemo() {
             break;
           }
           const call = toPendingCall(deferralEvent.data.pending_call);
-          // One frame per unanswered call, and a resolution can re-announce
-          // what is still outstanding, so replace by id rather than append.
+          // A resolution can re-announce what is still outstanding, so
+          // replace by id rather than append.
           setPendingCalls((current) => [
             ...current.filter(
               (existing) => existing.toolCallId !== call.toolCallId,
@@ -312,6 +310,81 @@ export function AiChatbotDemo() {
     onData: handleData,
   });
 
+  useEffect(() => {
+    let isActive = true;
+    getSessionId()
+      .then((id) => {
+        if (isActive && id) {
+          setSessionId(id);
+          pushEntry("info", "session.ready", id);
+          void fetchChatHistory(id).then((page) => {
+            if (!isActive || !page) {
+              return;
+            }
+            hasMoreHistory.current = page.hasMore;
+            nextHistoryBefore.current = page.nextBefore;
+            if (page.turns.length === 0) {
+              return;
+            }
+            const restoredMessages = page.turns.map(toUIMessage);
+            // The visitor can send before this lands, and `useChat` will have
+            // appended it already.
+            setMessages((current) =>
+              current.length > 0 ? current : restoredMessages,
+            );
+            pushEntry(
+              "info",
+              "history.restored",
+              `${page.turns.length} turns · more: ${page.hasMore}`,
+            );
+          });
+
+          void fetchSessionSources(id).then((restored) => {
+            if (!isActive || !restored) {
+              return;
+            }
+            setCapacity({
+              used: restored.documentsUsed,
+              allowed: restored.documentsAllowed,
+            });
+            if (restored.sources.length === 0) {
+              return;
+            }
+            // An upload started before this settled wins: the cold read is
+            // already stale by then.
+            setSources((current) =>
+              current.length > 0 ? current : restored.sources,
+            );
+            pushEntry(
+              "info",
+              "sources.restored",
+              restored.sources.map((source) => source.label).join(", "),
+            );
+          });
+
+          void fetchStarterQuestions(id).then((recovered) => {
+            if (!isActive || !recovered || recovered.suggestions.length === 0) {
+              return;
+            }
+            setStarterQuestions(recovered.suggestions);
+            pushEntry(
+              "info",
+              "starter_questions.recovered",
+              recovered.document ?? undefined,
+            );
+          });
+        }
+      })
+      .catch(() => {
+        if (isActive) {
+          pushEntry("error", "session.failed", "IndexedDB unavailable");
+        }
+      });
+    return () => {
+      isActive = false;
+    };
+  }, [pushEntry, setMessages]);
+
   const turns: ChatTurn[] = useMemo(() => {
     const mapped: ChatTurn[] = messages.map((message: UIMessage) => ({
       id: message.id,
@@ -322,8 +395,7 @@ export function AiChatbotDemo() {
         .join(""),
     }));
 
-    // `submitted` means the request is in flight but no delta has arrived —
-    // render an empty assistant turn so the typing indicator has something to
+    // In flight but no delta yet: the typing indicator needs a turn to
     // attach to.
     if (status === "submitted") {
       mapped.push({ id: "pending-response", role: "assistant", text: "" });
@@ -335,16 +407,44 @@ export function AiChatbotDemo() {
   const isStreaming = status === "submitted" || status === "streaming";
   const isReady = sessionId !== "";
 
+  // The cursor and the in-flight guard live here, so the panel only ever calls
+  // this and trusts it to no-op when there is nothing to fetch.
+  const loadOlderTurns = useCallback(() => {
+    if (
+      isLoadingOlderTurns.current ||
+      !hasMoreHistory.current ||
+      !nextHistoryBefore.current
+    ) {
+      return;
+    }
+    isLoadingOlderTurns.current = true;
+
+    void fetchChatHistory(sessionId, {
+      before: nextHistoryBefore.current,
+    }).then((page) => {
+      isLoadingOlderTurns.current = false;
+      if (!page) {
+        return;
+      }
+      hasMoreHistory.current = page.hasMore;
+      nextHistoryBefore.current = page.nextBefore;
+
+      setMessages((current) => {
+        const seen = new Set(current.map((message) => message.id));
+        const older = page.turns
+          .filter((turn) => !seen.has(turn.id))
+          .map(toUIMessage);
+        return older.length > 0 ? [...older, ...current] : current;
+      });
+    });
+  }, [sessionId, setMessages]);
+
   const handleSend = useCallback(
     (message: string) => {
       setChunks([]);
       setActiveSourceLabels([]);
-      // Same reasoning as the superseded calls below: an offer made about the
-      // previous question has no standing once a new one is asked.
       setSuggestions([]);
-      // A new message supersedes unanswered calls: the tool calls they belong
-      // to are a turn back by the time the answer lands, so the cards would be
-      // offering decisions that no longer fit the conversation.
+      setStarterQuestions([]);
       if (pendingCalls.length > 0) {
         setPendingCalls([]);
         pushEntry(
@@ -359,8 +459,6 @@ export function AiChatbotDemo() {
     [pendingCalls, pushEntry, sendMessage],
   );
 
-  // Both resolution endpoints answer one call and return what is still
-  // outstanding, so the bookkeeping either way is identical.
   const applyDeferralOutcome = useCallback(
     (
       toolCallId: string,
@@ -370,8 +468,7 @@ export function AiChatbotDemo() {
       setResolvingCallId(null);
 
       if (isDeferralFailure(outcome)) {
-        // The card stays up only while the answer might still land; a 409
-        // means it never can, so drop it.
+        // A 409 means the answer can never land, so stop offering it.
         if (outcome.status === 409) {
           setPendingCalls((current) =>
             current.filter((call) => call.toolCallId !== toolCallId),
@@ -390,12 +487,9 @@ export function AiChatbotDemo() {
       }
 
       const resolved: DeferralResult = outcome;
-      // The server says what is still waiting, including calls this one never
-      // knew about, so its list replaces the local one outright.
       setPendingCalls(resolved.pendingCalls);
 
-      // Neither endpoint streams, so the reply arrives whole and has to be
-      // appended by hand — `useChat` never saw the request.
+      // Neither endpoint streams, and `useChat` never saw the request.
       setMessages((current) => [
         ...current,
         {
@@ -405,8 +499,6 @@ export function AiChatbotDemo() {
         },
       ]);
 
-      // A run only resumes once nothing is outstanding; until then the reply
-      // is a progress note and no tool has actually run.
       if (resolved.pendingCalls.length === 0) {
         onResumed?.();
       }
@@ -431,8 +523,6 @@ export function AiChatbotDemo() {
 
       void resolveApproval(sessionId, toolCallId, approved).then((outcome) => {
         applyDeferralOutcome(toolCallId, outcome, () => {
-          // An approved clear deletes the documents server-side, so the
-          // sources panel is describing things that no longer exist.
           if (approved && call.toolName === "clear_knowledge_base") {
             setSources([]);
             setActiveSourceLabels([]);
@@ -462,10 +552,9 @@ export function AiChatbotDemo() {
       void resolveLinkSelection(sessionId, toolCallId, selectedLinks).then(
         (outcome) => {
           applyDeferralOutcome(toolCallId, outcome, () => {
-            // That endpoint indexes as it resolves, and the API exposes no way
-            // to re-read a session's documents, so the rows are added from
-            // what was submitted. Chunk counts are left at 0 rather than
-            // invented — the panel omits the count when it is 0.
+            // The API exposes no way to re-read a session's documents, so
+            // rows come from what was submitted. Chunk counts stay 0 rather
+            // than invented; the panel omits a 0.
             const indexed = [call.pageUrl, ...selectedLinks].filter(
               (url): url is string => Boolean(url),
             );
@@ -491,8 +580,7 @@ export function AiChatbotDemo() {
       setPendingCalls((current) =>
         current.filter((call) => call.toolCallId !== toolCallId),
       );
-      // Nothing is told to the server: a deferred call has no decline
-      // endpoint, so the parked run simply ages out.
+      // A deferred call has no decline endpoint; the parked run ages out.
       pushEntry("info", "deferral.dismissed", toolCallId);
     },
     [pushEntry],
@@ -520,6 +608,24 @@ export function AiChatbotDemo() {
 
       void ingestFile(sessionId, file).then((result) => {
         if (isIngestFailure(result)) {
+          // A 2xx that still failed is a schema mismatch, not a rejected
+          // upload — the document is stored, so the row must not say otherwise.
+          if (result.status >= 200 && result.status < 300) {
+            setSources((current) =>
+              current.map((source) =>
+                source.id === sourceId
+                  ? { ...source, status: "indexed", startedAt: undefined }
+                  : source,
+              ),
+            );
+            pushEntry(
+              "error",
+              "knowledge.response_unreadable",
+              `${file.name}: stored (${result.status}), but the response did not match the expected shape`,
+            );
+            return;
+          }
+
           const message = failureMessage(
             UPLOAD_FAILURE_MESSAGE,
             result.status,
@@ -542,6 +648,34 @@ export function AiChatbotDemo() {
             "knowledge.upload_failed",
             `${file.name}: ${message}`,
           );
+
+          // `request()` reports 503 for a network error or timeout, where the
+          // work may have completed and only the reply was lost. Every other
+          // status is an outright refusal with nothing to recover.
+          if (result.status === 503) {
+            void fetchStarterQuestions(sessionId).then((recovered) => {
+              if (!recovered || recovered.document !== file.name) {
+                return;
+              }
+              setSources((current) =>
+                current.map((source) =>
+                  source.id === sourceId
+                    ? {
+                        ...source,
+                        status: "indexed",
+                        errorDetail: undefined,
+                      }
+                    : source,
+                ),
+              );
+              setStarterQuestions(recovered.suggestions);
+              pushEntry(
+                "info",
+                "knowledge.upload_recovered",
+                `${file.name} landed despite the lost response`,
+              );
+            });
+          }
           return;
         }
 
@@ -560,6 +694,18 @@ export function AiChatbotDemo() {
               : source,
           ),
         );
+        setCapacity({
+          used: result.documentsUsed,
+          allowed: result.documentsAllowed,
+        });
+        setStarterQuestions(result.suggestions);
+        if (result.suggestions.length > 0) {
+          pushEntry(
+            "info",
+            "starter_questions.offered",
+            result.suggestions.map((question) => question.label).join(", "),
+          );
+        }
         pushEntry(
           result.imagesFailed > 0 ? "error" : "info",
           "knowledge.indexed",
@@ -574,6 +720,7 @@ export function AiChatbotDemo() {
     void clearKnowledge(sessionId).then((deleted) => {
       setSources([]);
       setActiveSourceLabels([]);
+      setCapacity(null);
       pushEntry(
         deleted === null ? "error" : "info",
         deleted === null ? "knowledge.clear_failed" : "knowledge.cleared",
@@ -588,6 +735,7 @@ export function AiChatbotDemo() {
       activeSourceLabels={activeSourceLabels}
       isReady={isReady}
       elapsedTick={elapsedTick}
+      capacity={capacity ?? undefined}
       onAddFileAction={handleAddFile}
       onClearAllAction={handleClearSources}
     />
@@ -612,8 +760,10 @@ export function AiChatbotDemo() {
       errorMessage={error?.message}
       pendingCalls={pendingCalls}
       suggestions={suggestions}
+      starterQuestions={starterQuestions}
       resolvingCallId={resolvingCallId}
       onSendAction={handleSend}
+      onLoadOlderTurnsAction={loadOlderTurns}
       onApprovalDecisionAction={handleApprovalDecision}
       onLinkSelectionAction={handleLinkSelection}
       onDismissCallAction={handleDismissCall}

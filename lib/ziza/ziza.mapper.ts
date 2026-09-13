@@ -1,10 +1,19 @@
 import { type z } from "zod";
 
 import {
+  type ChatHistoryResponseSchema,
   type KnowledgeIngestResponseSchema,
+  type KnowledgeSourcesResponseSchema,
+  type KnowledgeSuggestionsResponseSchema,
   type ZizaPendingCallSchema,
 } from "./ziza.schema";
-import { type KnowledgeIngestResult, type PendingCall } from "./ziza.types";
+import {
+  type ChatHistoryPage,
+  type KnowledgeIngestResult,
+  type PendingCall,
+  type SessionSources,
+  type StarterQuestions,
+} from "./ziza.types";
 
 export const toKnowledgeIngestResult = (
   apiResult: z.infer<typeof KnowledgeIngestResponseSchema>,
@@ -18,6 +27,7 @@ export const toKnowledgeIngestResult = (
   documentsUsed: apiResult.documents_used,
   documentsAllowed: apiResult.documents_allowed,
   pagesSummarised: apiResult.pages_summarised,
+  suggestions: apiResult.suggestions,
 });
 
 // Whose call this is belongs to the backend — the tool knows what it does —
@@ -56,3 +66,40 @@ export const toPendingCall = (
     slotsLeft: details.slots_left,
   };
 };
+
+export const toStarterQuestions = (
+  apiResult: z.infer<typeof KnowledgeSuggestionsResponseSchema>,
+): StarterQuestions => ({
+  document: apiResult.document,
+  suggestions: apiResult.suggestions,
+});
+
+export const toSessionSources = (
+  apiResult: z.infer<typeof KnowledgeSourcesResponseSchema>,
+): SessionSources => ({
+  documentsUsed: apiResult.documents_used,
+  documentsAllowed: apiResult.documents_allowed,
+  sources: [...apiResult.sources]
+    .sort((left, right) => left.added_at.localeCompare(right.added_at))
+    .map((source) => ({
+      // `document` is the identity the backend keys on, so it is also a stable
+      // row id — unlike the random one a live upload gets.
+      id: source.document,
+      label: source.document,
+      kind: source.kind,
+      chunkCount: source.chunks,
+      status: "indexed" as const,
+    })),
+});
+
+export const toChatHistoryPage = (
+  apiResult: z.infer<typeof ChatHistoryResponseSchema>,
+): ChatHistoryPage => ({
+  turns: apiResult.turns.map((turn) => ({
+    id: turn.id,
+    role: turn.role,
+    text: turn.text,
+  })),
+  hasMore: apiResult.has_more,
+  nextBefore: apiResult.next_before ?? null,
+});
