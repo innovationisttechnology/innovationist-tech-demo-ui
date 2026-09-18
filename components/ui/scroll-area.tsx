@@ -16,9 +16,19 @@ function ScrollArea({
       className={cn("relative", className)}
       {...props}
     >
+      {/*
+        Radix wraps the children in a `display: table; min-width: 100%` div so
+        a horizontal scrollbar has something wider than the viewport to
+        measure. This Root only ever renders a vertical scrollbar, and that
+        wrapper shrink-wraps to its content — an unbreakable URL or a wide code
+        block pushes it past the viewport and the overflow is clipped rather
+        than wrapped. Forcing it back to a block makes it track the viewport
+        width, so content wraps instead. Restore `display: table` here if a
+        horizontal scrollbar is ever added.
+      */}
       <ScrollAreaPrimitive.Viewport
         data-slot="scroll-area-viewport"
-        className="focus-visible:ring-ring/50 size-full rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[3px] focus-visible:outline-1"
+        className="focus-visible:ring-ring/50 size-full rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[3px] focus-visible:outline-1 [&>div]:!block [&>div]:!min-w-0"
       >
         {children}
       </ScrollAreaPrimitive.Viewport>

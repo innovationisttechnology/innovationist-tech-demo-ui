@@ -1,11 +1,12 @@
 "use client";
 
 import {
+  type KeyboardEvent,
+  memo,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
-  type KeyboardEvent,
 } from "react";
 import ReactMarkdown from "react-markdown";
 import { PaperPlaneRightIcon, RobotIcon } from "@phosphor-icons/react";
@@ -17,6 +18,7 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "@/components/ui/empty";
+import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { type PendingCall, type Suggestion } from "@/lib/ziza/ziza.types";
@@ -30,6 +32,30 @@ export type ChatTurn = {
   text: string;
 };
 
+// Deltas are token-sized and undebounced, so an unmemoised bubble re-parses
+// every completed answer on the page for each token of the one still arriving.
+const AssistantMessage = memo(function AssistantMessage({
+  text,
+}: {
+  text: string;
+}) {
+  return (
+    <div className="prose-sm [&_code]:bg-muted [&_pre]:bg-muted min-w-0 font-sans text-sm break-words [&_code]:rounded [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-xs [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_pre]:rounded [&_pre]:p-2 [&_strong]:font-semibold [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5">
+      <ReactMarkdown>{text}</ReactMarkdown>
+    </div>
+  );
+});
+
+function TypingIndicator() {
+  return (
+    <div className="flex gap-1 py-1.5" aria-hidden>
+      <span className="bg-muted-foreground size-1.5 animate-pulse rounded-full" />
+      <span className="bg-muted-foreground size-1.5 animate-pulse rounded-full [animation-delay:150ms]" />
+      <span className="bg-muted-foreground size-1.5 animate-pulse rounded-full [animation-delay:300ms]" />
+    </div>
+  );
+}
+
 type ChatPanelProps = {
   turns: readonly ChatTurn[];
   isStreaming: boolean;
@@ -40,6 +66,8 @@ type ChatPanelProps = {
   starterQuestions: readonly Suggestion[];
   // Which card is mid-request, so only that one shows as busy.
   resolvingCallId: string | null;
+  canRetry: boolean;
+  onRetryAction: () => void;
   onSendAction: (message: string) => void;
   onLoadOlderTurnsAction: () => void;
   onApprovalDecisionAction: (toolCallId: string, approved: boolean) => void;
@@ -59,6 +87,8 @@ export function ChatPanel({
   suggestions,
   starterQuestions,
   resolvingCallId,
+  canRetry,
+  onRetryAction,
   onSendAction,
   onLoadOlderTurnsAction,
   onApprovalDecisionAction,
@@ -172,7 +202,10 @@ export function ChatPanel({
   }
 
   return (
-    <section className="flex h-full flex-col overflow-hidden" aria-label="Chat">
+    <section
+      className="flex h-full min-w-0 flex-col overflow-hidden"
+      aria-label="Chat"
+    >
       <header className="border-border text-muted-foreground flex shrink-0 items-center justify-between border-b px-4 py-2.5 font-mono text-[0.625rem] tracking-widest uppercase">
         <span>Chat</span>
         {isStreaming ? (
@@ -186,7 +219,7 @@ export function ChatPanel({
       <ScrollArea ref={scrollAreaRef} className="min-h-0 flex-1">
         <div
           ref={logRef}
-          className="space-y-4 p-4"
+          className="min-w-0 space-y-6 px-8 py-6"
           role="log"
           aria-live="polite"
         >
@@ -212,45 +245,39 @@ export function ChatPanel({
             </Empty>
           ) : (
             turns.map((turn, index) => {
+              const isLastTurn = index === turns.length - 1;
               const showSuggestions =
                 suggestions.length > 0 &&
                 !isStreaming &&
                 turn.role === "assistant" &&
-                index === turns.length - 1;
+                isLastTurn;
+              // An answer can pause mid-sentence while the model runs a
+              // retrieval tool, so this tracks the stream rather than the empty
+              // text it used to — otherwise the gap reads as a hang.
+              const isAnswering =
+                isStreaming && turn.role === "assistant" && isLastTurn;
 
               return (
-                <div key={turn.id} className="space-y-2">
-                  <div
-                    className={
-                      turn.role === "user"
-                        ? "flex justify-end"
-                        : "flex justify-start"
-                    }
-                  >
-                    {turn.role === "assistant" && turn.text === "" ? (
-                      <div className="border-border bg-card flex gap-1 rounded-lg border px-3 py-2.5">
-                        <span className="bg-muted-foreground size-1.5 animate-pulse rounded-full" />
-                        <span className="bg-muted-foreground size-1.5 animate-pulse rounded-full [animation-delay:150ms]" />
-                        <span className="bg-muted-foreground size-1.5 animate-pulse rounded-full [animation-delay:300ms]" />
+                <div key={turn.id} className="space-y-3">
+                  {/*
+                    Only the visitor's own words get a bubble. The answer is
+                    the page's main content and reads as plain prose, so it
+                    runs the full width with no container of its own.
+                  */}
+                  {turn.role === "user" ? (
+                    <div className="flex justify-end">
+                      <div className="bg-primary text-primary-foreground max-w-[85%] min-w-0 rounded-lg px-3 py-2 font-sans text-sm break-words">
+                        {turn.text}
                       </div>
-                    ) : (
-                      <div
-                        className={`max-w-[85%] rounded-lg px-3 py-2 font-sans text-sm ${
-                          turn.role === "user"
-                            ? "bg-primary text-primary-foreground"
-                            : "border-border bg-card border"
-                        }`}
-                      >
-                        {turn.role === "assistant" ? (
-                          <div className="prose-sm [&_code]:bg-muted [&_pre]:bg-muted [&_code]:rounded [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-xs [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_pre]:overflow-x-auto [&_pre]:rounded [&_pre]:p-2 [&_strong]:font-semibold [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5">
-                            <ReactMarkdown>{turn.text}</ReactMarkdown>
-                          </div>
-                        ) : (
-                          turn.text
-                        )}
-                      </div>
-                    )}
-                  </div>
+                    </div>
+                  ) : (
+                    <>
+                      {turn.text === "" ? null : (
+                        <AssistantMessage text={turn.text} />
+                      )}
+                      {isAnswering ? <TypingIndicator /> : null}
+                    </>
+                  )}
 
                   {showSuggestions ? (
                     <SuggestionChips
@@ -286,6 +313,28 @@ export function ChatPanel({
             />
           ))}
 
+          {/*
+            The apology itself arrives as ordinary answer text and is already
+            in the bubble above, so this offers the action and does not repeat
+            it. Re-sending is the only recovery: a stream that failed left
+            nothing server-side to resume from.
+          */}
+          {canRetry ? (
+            <div className="border-border flex flex-wrap items-center gap-3 rounded-md border px-3 py-2">
+              <p className="text-muted-foreground font-mono text-[0.625rem] tracking-widest uppercase">
+                answer cut short
+              </p>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={onRetryAction}
+              >
+                Try again
+              </Button>
+            </div>
+          ) : null}
+
           {errorMessage ? (
             <p className="text-destructive border-destructive/30 bg-destructive/5 rounded-md border px-3 py-2 font-mono text-xs">
               {errorMessage}
@@ -294,7 +343,7 @@ export function ChatPanel({
         </div>
       </ScrollArea>
 
-      <div className="border-border shrink-0 border-t p-3">
+      <div className="border-border shrink-0 border-t p-4">
         {notice ? (
           <p
             role="status"

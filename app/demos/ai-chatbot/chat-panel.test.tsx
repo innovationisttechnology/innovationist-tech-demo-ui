@@ -19,6 +19,7 @@ const SUGGESTION = {
 
 function renderPanel(overrides: Partial<Parameters<typeof ChatPanel>[0]> = {}) {
   const onSendAction = vi.fn();
+  const onRetryAction = vi.fn();
   const rendered = render(
     <ChatPanel
       turns={[ANSWER]}
@@ -28,6 +29,8 @@ function renderPanel(overrides: Partial<Parameters<typeof ChatPanel>[0]> = {}) {
       suggestions={[SUGGESTION]}
       starterQuestions={[]}
       resolvingCallId={null}
+      canRetry={false}
+      onRetryAction={onRetryAction}
       onSendAction={onSendAction}
       onLoadOlderTurnsAction={vi.fn()}
       onApprovalDecisionAction={vi.fn()}
@@ -36,8 +39,31 @@ function renderPanel(overrides: Partial<Parameters<typeof ChatPanel>[0]> = {}) {
       {...overrides}
     />,
   );
-  return { ...rendered, onSendAction };
+  return { ...rendered, onSendAction, onRetryAction };
 }
+
+describe("recovering from a cut-off answer", () => {
+  // The apology reaches the bubble as ordinary answer text, so the panel would
+  // look like a normal reply if nothing marked it as recoverable.
+  it("stays out of the way until the stream actually fails", () => {
+    renderPanel();
+    expect(
+      screen.queryByRole("button", { name: "Try again" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("offers a retry once it has", () => {
+    renderPanel({ canRetry: true });
+    expect(screen.getByRole("button", { name: "Try again" })).toBeVisible();
+  });
+
+  it("hands the retry back rather than resending on its own", async () => {
+    const { onRetryAction, onSendAction } = renderPanel({ canRetry: true });
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(onRetryAction).toHaveBeenCalledTimes(1);
+    expect(onSendAction).not.toHaveBeenCalled();
+  });
+});
 
 describe("suggestion chips", () => {
   it("shows the label, not the message that gets sent", () => {
@@ -87,6 +113,13 @@ const ASK_SUGGESTION = {
   message: "How does the release captain rotate?",
 };
 
+const CATEGORISED_SUGGESTION = {
+  kind: "ask",
+  label: "Why did the invoice amount increase from $69.89 to $74.84?",
+  message: "Why did the invoice amount increase from $69.89 to $74.84?",
+  category: "Billing changes",
+};
+
 const STARTER = {
   kind: "ask",
   label: "What happens if the release captain is on leave?",
@@ -123,6 +156,23 @@ describe("the kicker above the chips", () => {
     renderPanel({ suggestions: [SUGGESTION, ASK_SUGGESTION] });
     expect(screen.getByText("try instead")).toBeInTheDocument();
     expect(screen.getByText("worth asking")).toBeInTheDocument();
+  });
+
+  // The kicker is a stand-in for a topic the backend could not name. Once it
+  // names one, the stand-in is noise.
+  it("gives way to the real topic when the backend sends one", () => {
+    renderPanel({ suggestions: [CATEGORISED_SUGGESTION] });
+    expect(screen.getByText("Billing changes")).toBeInTheDocument();
+    expect(screen.queryByText("worth asking")).not.toBeInTheDocument();
+  });
+
+  // `add_page` suggestions never carry a category, so a categorised `ask`
+  // alongside them must not strip the kicker they still need.
+  it("keeps the kicker for a kind that has no topic of its own", () => {
+    renderPanel({ suggestions: [SUGGESTION, CATEGORISED_SUGGESTION] });
+    expect(screen.getByText("try instead")).toBeInTheDocument();
+    expect(screen.getByText("Billing changes")).toBeInTheDocument();
+    expect(screen.queryByText("worth asking")).not.toBeInTheDocument();
   });
 });
 
@@ -197,7 +247,8 @@ describe("the starter-question cards", () => {
     expect(screen.getByText("Scope")).toBeInTheDocument();
   });
 
-  // Nothing sends `category` yet, so the card must not leave a blank line.
+  // `category` is nullish on the wire and null for every `add_page`, so the
+  // card must not leave a blank line where the topic would go.
   it("omits the topic line when there is none", () => {
     const { container } = renderPanel({
       turns: [],
@@ -215,5 +266,48 @@ describe("the starter-question cards", () => {
     });
     expect(container.querySelector(".\\@container")).not.toBeNull();
     expect(container.querySelector(".\\@xs\\:grid-cols-2")).not.toBeNull();
+  });
+});
+
+describe("the activity indicator", () => {
+  // Scoped to the log: the panel header carries its own pulsing pip whenever
+  // the stream is open, which would be counted too.
+  const countDots = (container: HTMLElement) =>
+    container.querySelectorAll('[role="log"] .animate-pulse').length;
+
+  it("shows while the answer is still empty", () => {
+    const { container } = renderPanel({
+      turns: [{ id: "a1", role: "assistant", text: "" }],
+      isStreaming: true,
+      suggestions: [],
+    });
+    expect(countDots(container)).toBe(3);
+  });
+
+  // The model can pause mid-sentence to run a retrieval tool. Keying off empty
+  // text alone left the visitor watching a half-finished sentence with nothing
+  // to say anything was still happening.
+  it("stays up once the first delta has landed", () => {
+    const { container } = renderPanel({
+      turns: [{ id: "a1", role: "assistant", text: "Let me search " }],
+      isStreaming: true,
+      suggestions: [],
+    });
+    expect(screen.getByText(/Let me search/)).toBeVisible();
+    expect(countDots(container)).toBe(3);
+  });
+
+  it("goes away when the stream finishes", () => {
+    const { container } = renderPanel({ suggestions: [] });
+    expect(countDots(container)).toBe(0);
+  });
+
+  it("attaches to the newest turn only", () => {
+    const { container } = renderPanel({
+      turns: [ANSWER, { id: "u1", role: "user", text: "and pricing?" }],
+      isStreaming: true,
+      suggestions: [],
+    });
+    expect(countDots(container)).toBe(0);
   });
 });

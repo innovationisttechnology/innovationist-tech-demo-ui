@@ -37,7 +37,7 @@ export function InspectorPanel({
 }: InspectorPanelProps) {
   return (
     <section
-      className="flex h-full flex-col overflow-hidden"
+      className="flex h-full min-w-0 flex-col overflow-hidden"
       aria-label="Agent inspector"
     >
       <Tabs
@@ -66,7 +66,7 @@ export function InspectorPanel({
 
         <TabsContent value="stream" className="mt-0 min-h-0 flex-1">
           <ScrollArea className="h-full">
-            <div className="space-y-1.5 p-3 font-mono text-[0.6875rem] leading-relaxed">
+            <div className="min-w-0 space-y-1.5 p-3 font-mono text-[0.6875rem] leading-relaxed">
               {entries.length === 0 ? (
                 <Empty className="p-0">
                   <EmptyHeader>
@@ -88,7 +88,7 @@ export function InspectorPanel({
                       <span className="text-muted-foreground/70">
                         {entry.time}{" "}
                       </span>
-                      <span className={LEVEL_CLASS[entry.level]}>
+                      <span className={`break-all ${LEVEL_CLASS[entry.level]}`}>
                         {entry.label}
                       </span>
                     </p>
@@ -106,7 +106,7 @@ export function InspectorPanel({
 
         <TabsContent value="chunks" className="mt-0 min-h-0 flex-1">
           <ScrollArea className="h-full">
-            <div className="space-y-3 p-3">
+            <div className="min-w-0 space-y-3 p-3">
               {chunks.length === 0 ? (
                 <Empty className="p-0">
                   <EmptyHeader>
@@ -129,12 +129,12 @@ export function InspectorPanel({
                     className="border-border bg-card rounded-md border p-2.5"
                   >
                     <header className="text-muted-foreground mb-1.5 flex items-center justify-between font-mono text-[0.625rem] tracking-wide uppercase">
-                      <span className="truncate">{chunk.source}</span>
+                      <span className="min-w-0 truncate">{chunk.source}</span>
                       <span className="text-primary shrink-0">
                         {chunk.score.toFixed(2)}
                       </span>
                     </header>
-                    <p className="font-sans text-xs leading-relaxed">
+                    <p className="font-sans text-xs leading-relaxed break-words">
                       {chunk.text}
                     </p>
                   </article>

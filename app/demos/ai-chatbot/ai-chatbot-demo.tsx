@@ -108,6 +108,9 @@ export function AiChatbotDemo() {
   const [pendingCalls, setPendingCalls] = useState<readonly PendingCall[]>([]);
   const [resolvingCallId, setResolvingCallId] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<readonly Suggestion[]>([]);
+  // `useChat`'s own `error` never fires for a mid-stream failure: the response
+  // is a clean 200 that ends normally, so the frame is the only signal there is.
+  const [streamFailed, setStreamFailed] = useState(false);
   // Its own slot, not a `kind` filter on the array above: an upload can finish
   // while an unclicked turn-level chip is showing, and sharing would wipe it.
   const [starterQuestions, setStarterQuestions] = useState<
@@ -293,6 +296,10 @@ export function AiChatbotDemo() {
           );
           break;
         }
+        case "chat.error":
+          pushEntry("error", "stream.error", "The answer was cut short.");
+          setStreamFailed(true);
+          break;
         case "error": {
           const errorEvent = payload as { message: string };
           pushEntry("error", "stream.error", errorEvent.message);
@@ -441,6 +448,7 @@ export function AiChatbotDemo() {
 
   const handleSend = useCallback(
     (message: string) => {
+      setStreamFailed(false);
       setChunks([]);
       setActiveSourceLabels([]);
       setSuggestions([]);
@@ -458,6 +466,25 @@ export function AiChatbotDemo() {
     },
     [pendingCalls, pushEntry, sendMessage],
   );
+
+  // The failed exchange stays in the transcript rather than being rewound: the
+  // apology is the visitor's evidence something went wrong, and re-sending is a
+  // fresh request either way — the server kept nothing from the failed turn.
+  const handleRetry = useCallback(() => {
+    const lastUserMessage = messages.findLast(
+      (message: UIMessage) => message.role === "user",
+    );
+    const text =
+      lastUserMessage?.parts
+        .filter(isTextUIPart)
+        .map((part) => part.text)
+        .join("") ?? "";
+    if (text === "") {
+      return;
+    }
+    pushEntry("info", "stream.retry", `${text.length} chars`);
+    handleSend(text);
+  }, [handleSend, messages, pushEntry]);
 
   const applyDeferralOutcome = useCallback(
     (
@@ -762,6 +789,8 @@ export function AiChatbotDemo() {
       suggestions={suggestions}
       starterQuestions={starterQuestions}
       resolvingCallId={resolvingCallId}
+      canRetry={streamFailed && !isStreaming}
+      onRetryAction={handleRetry}
       onSendAction={handleSend}
       onLoadOlderTurnsAction={loadOlderTurns}
       onApprovalDecisionAction={handleApprovalDecision}
