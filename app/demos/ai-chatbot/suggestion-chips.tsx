@@ -44,6 +44,12 @@ type SuggestionChipsProps = {
  * No colour or icon per kind: tinting these would borrow the vocabulary
  * `deferred-call-card.tsx` reserves for things that delete or send, and these
  * have zero stakes.
+ *
+ * The heading is per suggestion, not per group, because `category` is: only
+ * `ask` carries one and the backend returns at most one `ask` per frame, so
+ * today the two shapes look identical — but starter questions use the same
+ * `Suggestion` model and arrive three at a time, each with its own category.
+ * Per suggestion is the shape that survives if those are ever routed here.
  */
 export function SuggestionChips({
   suggestions,
@@ -57,20 +63,32 @@ export function SuggestionChips({
     <div className="space-y-3">
       {groupByKind(suggestions).map(([kind, group]) => (
         <div key={kind} className="space-y-1.5">
-          <p className="text-muted-foreground font-mono text-[0.625rem] tracking-widest uppercase">
-            {kickerFor(kind)}
-          </p>
+          {group.some((suggestion) => suggestion.category) ? null : (
+            <p className="text-muted-foreground font-mono text-[0.625rem] tracking-widest uppercase">
+              {kickerFor(kind)}
+            </p>
+          )}
           <div className="flex flex-wrap gap-2">
             {group.map((suggestion) => (
-              <Button
+              <div
                 key={`${suggestion.kind}:${suggestion.label}`}
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => onSendAction(suggestion.message)}
+                className="flex flex-col items-start gap-2"
               >
-                {suggestion.label}
-              </Button>
+                {suggestion.category ? (
+                  <span className="text-primary font-mono text-[0.625rem] tracking-widest uppercase">
+                    {suggestion.category}
+                  </span>
+                ) : null}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-auto px-4 py-2"
+                  onClick={() => onSendAction(suggestion.message)}
+                >
+                  {suggestion.label}
+                </Button>
+              </div>
             ))}
           </div>
         </div>

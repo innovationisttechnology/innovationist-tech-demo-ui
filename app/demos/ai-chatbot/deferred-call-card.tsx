@@ -64,7 +64,7 @@ export function DeferredCallCard({
         {call.kind === "approval" ? "confirmation required" : "your choice"}
       </p>
 
-      <p className="font-sans text-sm">
+      <p className="font-sans text-sm break-words">
         {call.summary ??
           (call.kind === "approval"
             ? "This needs your confirmation before it can run."
@@ -74,14 +74,14 @@ export function DeferredCallCard({
       {call.kind === "approval" ? (
         <>
           {call.documents.length > 0 ? (
-            <ul className="text-muted-foreground space-y-0.5 font-mono text-xs">
+            <ul className="text-muted-foreground space-y-0.5 font-mono text-xs break-all">
               {call.documents.map((document) => (
                 <li key={document}>{document}</li>
               ))}
             </ul>
           ) : null}
 
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button
               type="button"
               size="sm"

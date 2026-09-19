@@ -286,7 +286,7 @@ export function SourcesPanel({
     // The whole panel is the target, not just the picker: aiming at a small
     // control is the part of dragging people get wrong.
     <section
-      className="relative flex h-full flex-col overflow-hidden"
+      className="relative flex h-full min-w-0 flex-col overflow-hidden"
       aria-label="Knowledge base sources"
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
@@ -391,7 +391,7 @@ export function SourcesPanel({
                         />
                       )}
                     </ItemMedia>
-                    <ItemContent className="gap-0.5">
+                    <ItemContent className="min-w-0 gap-0.5">
                       <span className="truncate font-sans text-sm">
                         {source.label}
                       </span>
@@ -408,7 +408,7 @@ export function SourcesPanel({
                         </span>
                       </span>
                       {source.errorDetail ? (
-                        <span className="text-destructive font-mono text-[0.625rem] leading-snug">
+                        <span className="text-destructive font-mono text-[0.625rem] leading-snug break-words">
                           {source.errorDetail}
                         </span>
                       ) : null}

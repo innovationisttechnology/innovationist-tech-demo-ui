@@ -471,3 +471,24 @@ describe("a text frame", () => {
     ).toBe(true);
   });
 });
+
+describe("the chat.error frame", () => {
+  const CHAT_ERROR_FRAME = { type: "chat.error" };
+
+  it("parses as an agent event so the route forwards it", () => {
+    expect(ZizaAgentEventSchema.safeParse(CHAT_ERROR_FRAME).success).toBe(true);
+  });
+
+  // `format_sse` serialises with `exclude_none`, so the frame carries the type
+  // and nothing else — a schema demanding a `message` would reject it.
+  it("needs no message alongside the type", () => {
+    const parsed = ZizaAgentEventSchema.parse(CHAT_ERROR_FRAME);
+    expect(parsed.type).toBe("chat.error");
+  });
+
+  // It is tried after the text schema, which matches on a `chunk` string
+  // alone — the apology that precedes this frame must stay a text delta.
+  it("is not mistaken for a text delta", () => {
+    expect(ZizaTextFrameSchema.safeParse(CHAT_ERROR_FRAME).success).toBe(false);
+  });
+});

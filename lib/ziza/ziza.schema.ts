@@ -173,6 +173,10 @@ export const ZizaSuggestionsEventSchema = z.object({
   suggestions: z.array(ZizaSuggestionSchema),
 });
 
+export const ZizaChatErrorEventSchema = z.object({
+  type: z.literal("chat.error"),
+});
+
 export const ZizaAgentEventSchema = z.discriminatedUnion("type", [
   ZizaIntentEventSchema,
   ZizaToolCallEventSchema,
@@ -181,6 +185,7 @@ export const ZizaAgentEventSchema = z.discriminatedUnion("type", [
   ZizaApprovalRequiredEventSchema,
   ZizaInputRequiredEventSchema,
   ZizaSuggestionsEventSchema,
+  ZizaChatErrorEventSchema,
 ]);
 
 export type ZizaAgentEvent = z.infer<typeof ZizaAgentEventSchema>;
