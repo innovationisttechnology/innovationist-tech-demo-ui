@@ -1,9 +1,7 @@
 "use client";
 
-import { type Suggestion } from "@/lib/ziza/ziza.types";
-
 type StarterQuestionsProps = {
-  questions: readonly Suggestion[];
+  questions: readonly string[];
   onSendAction: (message: string) => void;
 };
 
@@ -24,18 +22,13 @@ export function StarterQuestions({
       <div className="grid gap-4 @xs:grid-cols-2">
         {questions.map((question) => (
           <button
-            key={`${question.kind}:${question.label}`}
+            key={question}
             type="button"
-            onClick={() => onSendAction(question.message)}
+            onClick={() => onSendAction(question)}
             className="border-border bg-card hover:border-primary/50 hover:bg-muted/40 focus-visible:ring-ring/50 flex flex-col gap-2 rounded-lg border p-5 text-left transition-colors outline-none focus-visible:ring-2"
           >
-            {question.category ? (
-              <span className="text-primary font-mono text-[0.625rem] tracking-widest uppercase">
-                {question.category}
-              </span>
-            ) : null}
             <span className="font-sans text-sm leading-snug text-balance">
-              {question.label}
+              {question}
             </span>
           </button>
         ))}

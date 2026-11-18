@@ -18,6 +18,12 @@ if (!("ResizeObserver" in globalThis)) {
   };
 }
 
+// jsdom has no Element.scrollTo, which smooth scrolling needs. Node-env
+// test files have no Element at all.
+if (typeof Element !== "undefined") {
+  Element.prototype.scrollTo ??= function () {};
+}
+
 // Mock next/navigation (App Router hooks)
 vi.mock("next/navigation", () => ({
   useRouter: () => ({

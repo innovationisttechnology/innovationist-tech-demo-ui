@@ -1,191 +1,324 @@
 import { z } from "zod";
 
-// Raw backend shapes (`app/ziza_chat/schemas.py`); the mapper converts to camelCase.
+// Raw shapes of ziza-ai-api's `/api/app` routes; the mapper converts to
+// camelCase. Objects are `.loose()` so a field ziza adds later never fails a
+// whole response.
 
 export const ZizaChatRequestSchema = z.object({
-  session_id: z.string().min(1),
-  message: z.string().min(1).max(4000),
+  message: z.string().min(1),
 });
 
-export const ZizaOfferedLinkSchema = z.object({
-  url: z.string(),
-  text: z.string(),
-});
-
-export const ZizaPendingCallSchema = z.object({
-  tool_call_id: z.string(),
-  tool_name: z.string(),
-  kind: z.enum(["approval", "call"]),
-  details: z
-    .object({
-      action: z.string().optional(),
-      summary: z.string().optional(),
-      severity: z.enum(["destructive", "warning", "info"]).optional(),
-      // `clear_knowledge_base`
-      documents: z.array(z.string()).optional(),
-      // `add_url_to_knowledge_base`
-      url: z.string().optional(),
-      page_title: z.string().nullable().optional(),
-      links: z.array(ZizaOfferedLinkSchema).optional(),
-      slots_left: z.number().optional(),
-    })
-    .loose()
-    .default({}),
-});
-
-export const ZizaSuggestionSchema = z
+// Every ziza error, and every error the BFF itself raises, has this shape.
+// Branch on `details.code`, never on `message`.
+export const ZizaErrorBodySchema = z
   .object({
-    kind: z.string(),
-    label: z.string(),
-    message: z.string(),
-    // Nullish, not optional: the backend sends an explicit `"url": null`, and
-    // `.optional()` rejects null — which failed the whole response, not just
-    // this field.
-    url: z.string().nullish(),
-    category: z.string().nullish(),
+    error: z.string().optional(),
+    message: z.string().optional(),
+    status_code: z.number().optional(),
+    details: z
+      .object({
+        code: z.string(),
+        message: z.string().optional(),
+        retry_after_seconds: z.number().optional(),
+      })
+      .loose(),
   })
   .loose();
 
-export const ZizaChatResponseSchema = z.object({
+export type ZizaErrorBody = z.infer<typeof ZizaErrorBodySchema>;
+
+export const ZizaSessionCreatedSchema = z.object({
   session_id: z.string(),
-  response: z.string(),
-  intent: z.string(),
-  pending_calls: z.array(ZizaPendingCallSchema).default([]),
-  suggestions: z.array(ZizaSuggestionSchema).default([]),
+  token: z.string(),
+  expires_at: z.string(),
 });
 
-export const KnowledgeIngestResponseSchema = z.object({
-  session_id: z.string(),
-  source: z.string(),
-  chunks_ingested: z.number(),
-  // False only when the vector index hadn't caught up within the ingest
-  // timeout — the chunks are stored and become searchable shortly after.
-  searchable: z.boolean(),
-  images_described: z.number().default(0),
-  images_failed: z.number().default(0),
-  documents_used: z.number().default(0),
-  documents_allowed: z.number().default(0),
-  pages_summarised: z.number().default(0),
-  // This response arriving IS the signal that they are ready — no second async
-  // step, which is why it is a second or two slower. Often empty.
-  suggestions: z.array(ZizaSuggestionSchema).default([]),
+export const ZizaSessionEnsuredSchema = z.object({
+  is_new_session: z.boolean(),
 });
 
-// Recovery read, for the two cases the ingest response cannot cover: a reload
-// before the visitor asked anything, or an upload whose request died after the
-// work completed. Only ever the most recently added document.
-export const KnowledgeSuggestionsResponseSchema = z.object({
-  session_id: z.string(),
-  document: z.string().nullable(),
-  suggestions: z.array(ZizaSuggestionSchema).default([]),
+export const ZizaCitationSchema = z
+  .object({
+    number: z.number(),
+    record_id: z.string().nullish(),
+    source_id: z.string().nullish(),
+    source_ref: z.string().nullish(),
+    locator: z.string().nullish(),
+    score: z.number().nullish(),
+    // Only on history: the source was removed after the answer cited it.
+    removed: z.boolean().optional(),
+  })
+  .loose();
+
+export const ZizaRefusalSchema = z
+  .object({
+    kind: z.string(),
+    redirect: z.string().nullish(),
+    sources: z.array(z.unknown()).nullish(),
+  })
+  .loose();
+
+// --- chat stream events (`event: <name>`, JSON data) -------------------------
+
+export const ZizaSearchingEventSchema = z.object({}).loose();
+
+export const ZizaPassageSchema = z
+  .object({
+    number: z.number(),
+    title: z.string().nullish(),
+    locator: z.string().nullish(),
+    excerpt: z.string().nullish(),
+  })
+  .loose();
+
+export const ZizaWorkingEventSchema = z
+  .object({
+    kind: z.string(),
+    query: z.string().nullish(),
+    passages: z.array(ZizaPassageSchema).nullish(),
+    tool: z.string().nullish(),
+    status: z.string().nullish(),
+  })
+  .loose();
+
+export const ZizaTextEventSchema = z.object({ text: z.string() }).loose();
+
+export const ZizaCitationsEventSchema = z
+  .object({ citations: z.array(ZizaCitationSchema) })
+  .loose();
+
+export const ZizaApprovalRequiredEventSchema = z
+  .object({
+    action_id: z.string(),
+    tool: z.string(),
+    description: z.string().nullish(),
+    expires_at: z.string().nullish(),
+  })
+  .loose();
+
+export const ZizaDoneEventSchema = z
+  .object({
+    answered: z.boolean().optional(),
+    small_talk: z.boolean().optional(),
+    usage: z.unknown().optional(),
+    refusal: ZizaRefusalSchema.nullish(),
+    pending_action: z.unknown().optional(),
+  })
+  .loose();
+
+export const ZizaSuggestionsEventSchema = z
+  .object({
+    follow_ups: z.array(z.string()).default([]),
+  })
+  .loose();
+
+export const ZizaLinksOfferedEventSchema = z
+  .object({
+    offer_id: z.string(),
+    page_url: z.string(),
+    links: z
+      .array(z.object({ url: z.string(), title: z.string().nullish() }).loose())
+      .default([]),
+    expires_at: z.string().nullish(),
+  })
+  .loose();
+
+export const ZizaLimitEventSchema = z
+  .object({
+    code: z.string(),
+    message: z.string().nullish(),
+    retry_after_seconds: z.number().nullish(),
+  })
+  .loose();
+
+export const ZizaStreamErrorEventSchema = z
+  .object({
+    code: z.string().nullish(),
+    message: z.string().nullish(),
+  })
+  .loose();
+
+export const ZIZA_CHAT_EVENT_SCHEMAS = {
+  searching: ZizaSearchingEventSchema,
+  working: ZizaWorkingEventSchema,
+  text: ZizaTextEventSchema,
+  citations: ZizaCitationsEventSchema,
+  approval_required: ZizaApprovalRequiredEventSchema,
+  done: ZizaDoneEventSchema,
+  suggestions: ZizaSuggestionsEventSchema,
+  links_offered: ZizaLinksOfferedEventSchema,
+  limit: ZizaLimitEventSchema,
+  error: ZizaStreamErrorEventSchema,
+} as const;
+
+export type ZizaChatEventName = keyof typeof ZIZA_CHAT_EVENT_SCHEMAS;
+
+export type ZizaChatEvent = {
+  [EventName in ZizaChatEventName]: {
+    type: EventName;
+  } & z.infer<(typeof ZIZA_CHAT_EVENT_SCHEMAS)[EventName]>;
+}[ZizaChatEventName];
+
+export function isZizaChatEventName(
+  eventName: string,
+): eventName is ZizaChatEventName {
+  return Object.hasOwn(ZIZA_CHAT_EVENT_SCHEMAS, eventName);
+}
+
+// Validates one event as it arrives from ziza, and again in the browser after
+// the BFF forwards it with the event name folded in as `type`.
+export function parseZizaChatEvent(
+  eventName: string,
+  payload: unknown,
+): ZizaChatEvent | null {
+  if (!isZizaChatEventName(eventName)) {
+    return null;
+  }
+  const parsed = ZIZA_CHAT_EVENT_SCHEMAS[eventName].safeParse(payload);
+  return parsed.success
+    ? ({ ...parsed.data, type: eventName } as ZizaChatEvent)
+    : null;
+}
+
+// What the BFF returns for an approval once it has read the resumed turn to
+// its end. Built by `app/bff/ziza/approvals`, not by ziza.
+export const ZizaResumedTurnSchema = z.object({
+  text: z.string(),
+  citations: z.array(ZizaCitationSchema).default([]),
+  approval_required: ZizaApprovalRequiredEventSchema.nullable().default(null),
+  suggestions: ZizaSuggestionsEventSchema.nullable().default(null),
+  refusal: ZizaRefusalSchema.nullable().default(null),
+  failure: ZizaStreamErrorEventSchema.nullable().default(null),
 });
 
-// One page of a stored conversation, newest page first. Ids are derived from
-// the stored turn rather than its position, so deduplicating across pages while
-// scrolling back is safe.
-export const ChatHistoryResponseSchema = z.object({
-  session_id: z.string(),
-  turns: z
-    .array(
-      z.object({
+// The camelCase `Citation` the BFF and the history mapper put on a message as
+// its `data-citations` part. Checked again when the message is rendered.
+export const CitationPartSchema = z.array(
+  z.object({
+    number: z.number(),
+    sourceId: z.string().optional(),
+    sourceRef: z.string().optional(),
+    locator: z.string().optional(),
+    isRemoved: z.boolean(),
+  }),
+);
+
+export const UnfinishedActionPartSchema = z.object({
+  description: z.string(),
+  reason: z.string(),
+});
+
+// --- session documents --------------------------------------------------------
+
+export const ZizaJobViewSchema = z
+  .object({
+    id: z.string(),
+    kind: z.string().nullish(),
+    status: z.enum(["queued", "processing", "done", "failed"]),
+    attempts: z.number().nullish(),
+    progress: z
+      .object({
+        step: z.string().nullish(),
+        done: z.number().nullish(),
+        total: z.number().nullish(),
+      })
+      .loose()
+      .nullish(),
+    // Shaped by the job's kind: an ingest job's names its source, a starters
+    // job's does not.
+    result: z
+      .object({
+        source_id: z.string().nullish(),
+        // The starters job queued when this ingest finished; null when the
+        // product has starters turned off.
+        starters_job_id: z.string().nullish(),
+        // A finished starters job's questions for that one upload; missing
+        // when the job skipped (session ended, spend cap, starters off).
+        questions: z.array(z.string()).nullish(),
+        chunks: z.number().nullish(),
+        images_described: z.number().nullish(),
+        images_skipped: z.number().nullish(),
+        images_failed: z.number().nullish(),
+        summary_added: z.boolean().nullish(),
+        spend_cap_reached: z.boolean().nullish(),
+      })
+      .loose()
+      .nullish(),
+    error: z
+      .object({
+        type: z.string().nullish(),
+        message: z.string().nullish(),
+        retryable: z.boolean().nullish(),
+      })
+      .loose()
+      .nullish(),
+    created_at: z.string().nullish(),
+    finished_at: z.string().nullish(),
+  })
+  .loose();
+
+export const ZizaSourcesPageSchema = z.object({
+  items: z.array(
+    z
+      .object({
+        source_id: z.string(),
+        title: z.string().nullish(),
+        kind: z.string(),
+        added_at: z.string().nullish(),
+        status: z.string(),
+      })
+      .loose(),
+  ),
+  total: z.number(),
+  limit: z.number(),
+  skip: z.number(),
+});
+
+export const ZizaSourceRemovedSchema = z.object({
+  source_id: z.string(),
+  removed: z.string(),
+});
+
+export const ZizaStartersSchema = z.object({
+  starters: z.array(z.string()).default([]),
+});
+
+export const ZizaLinkOfferOutcomeSchema = z.object({
+  added: z.array(z.object({ url: z.string(), job_id: z.string() }).loose()),
+  refused: z.array(
+    z
+      .object({
+        url: z.string(),
+        code: z.string().nullish(),
+        message: z.string().nullish(),
+      })
+      .loose(),
+  ),
+});
+
+// --- history ------------------------------------------------------------------
+
+export const ZizaHistoryPageSchema = z.object({
+  turns: z.array(
+    z
+      .object({
         id: z.string(),
-        role: z.enum(["user", "assistant"]),
-        text: z.string(),
-        at: z.string(),
-      }),
-    )
-    .default([]),
-  has_more: z.boolean().default(false),
+        user_text: z.string(),
+        answer_text: z.string().nullish(),
+        citations: z.array(ZizaCitationSchema).default([]),
+        answered: z.boolean().nullish(),
+        cited: z.boolean().nullish(),
+        small_talk: z.boolean().nullish(),
+        unfinished_action: z
+          .object({
+            description: z.string(),
+            reason: z.string(),
+          })
+          .loose()
+          .nullish(),
+        created_at: z.string(),
+      })
+      .loose(),
+  ),
   next_before: z.string().nullish(),
 });
-
-// The cold read of a session's documents, so a reload doesn't empty a panel
-// whose session still holds — and still answers from — them.
-export const KnowledgeSourcesResponseSchema = z.object({
-  session_id: z.string(),
-  documents_used: z.number().default(0),
-  documents_allowed: z.number().default(0),
-  sources: z
-    .array(
-      z.object({
-        // The document's identity, not its display label: a filename, or the
-        // URL as submitted rather than the one it redirected to.
-        document: z.string(),
-        kind: z.enum(["file", "url"]),
-        chunks: z.number().default(0),
-        added_at: z.string(),
-      }),
-    )
-    .default([]),
-});
-
-export const KnowledgeClearResponseSchema = z.object({
-  session_id: z.string(),
-  chunks_deleted: z.number(),
-});
-
-// --- SSE stream envelope -----------------------------------------------------
-//
-// The `chat.*` names are live. The bare ones (`intent`, `tool_call`,
-// `chunk_retrieved`, `error`) have never been emitted — kept so the inspector
-// works the day they are, with no frontend change.
-
-export const ZizaTextFrameSchema = z.object({ chunk: z.string() });
-
-export const ZizaIntentEventSchema = z.object({
-  type: z.literal("intent"),
-  intents: z.array(z.string()),
-  needs_rag: z.boolean(),
-  rag_query: z.string().nullable().optional(),
-  rag_ambiguous: z.boolean().optional(),
-});
-
-export const ZizaToolCallEventSchema = z.object({
-  type: z.literal("tool_call"),
-  tool: z.string(),
-  args: z.record(z.string(), z.unknown()).optional(),
-});
-
-export const ZizaChunkRetrievedEventSchema = z.object({
-  type: z.literal("chunk_retrieved"),
-  source: z.string(),
-  score: z.number(),
-  text: z.string(),
-});
-
-export const ZizaErrorEventSchema = z.object({
-  type: z.literal("error"),
-  message: z.string(),
-});
-
-export const ZizaApprovalRequiredEventSchema = z.object({
-  type: z.literal("chat.approval_required"),
-  pending_call: ZizaPendingCallSchema,
-});
-
-export const ZizaInputRequiredEventSchema = z.object({
-  type: z.literal("chat.input_required"),
-  pending_call: ZizaPendingCallSchema,
-});
-
-export const ZizaSuggestionsEventSchema = z.object({
-  type: z.literal("chat.suggestions"),
-  suggestions: z.array(ZizaSuggestionSchema),
-});
-
-export const ZizaChatErrorEventSchema = z.object({
-  type: z.literal("chat.error"),
-});
-
-export const ZizaAgentEventSchema = z.discriminatedUnion("type", [
-  ZizaIntentEventSchema,
-  ZizaToolCallEventSchema,
-  ZizaChunkRetrievedEventSchema,
-  ZizaErrorEventSchema,
-  ZizaApprovalRequiredEventSchema,
-  ZizaInputRequiredEventSchema,
-  ZizaSuggestionsEventSchema,
-  ZizaChatErrorEventSchema,
-]);
-
-export type ZizaAgentEvent = z.infer<typeof ZizaAgentEventSchema>;

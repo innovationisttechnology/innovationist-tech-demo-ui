@@ -1,494 +1,374 @@
 import { describe, expect, it } from "vitest";
 
-import { toPendingCall } from "./ziza.mapper";
-import { toChatHistoryPage, toSessionSources } from "./ziza.mapper";
 import {
-  ChatHistoryResponseSchema,
-  KnowledgeIngestResponseSchema,
-  KnowledgeSourcesResponseSchema,
-  KnowledgeSuggestionsResponseSchema,
-  ZizaAgentEventSchema,
-  ZizaTextFrameSchema,
+  toChatHistoryPage,
+  toSessionJob,
+  toPendingApproval,
+  toPendingLinkOffer,
+  toResumedTurn,
+  toSessionSources,
+  toZizaFailure,
+} from "./ziza.mapper";
+import {
+  ZizaErrorBodySchema,
+  ZizaHistoryPageSchema,
+  ZizaJobViewSchema,
+  ZizaResumedTurnSchema,
+  ZizaSourcesPageSchema,
+  parseZizaChatEvent,
 } from "./ziza.schema";
 
-// Verbatim from the backend SSE. A frame that matches neither schema is
-// dropped in the route handler, which is invisible from the browser — these
-// pin the wire contract so that regression is a red test instead of a
-// terminal-log hunt.
-const APPROVAL_FRAME = {
-  type: "chat.approval_required",
-  pending_call: {
-    tool_call_id: "toolu_01AxASaNG7y1vyVu4tW4cCkG",
-    tool_name: "clear_knowledge_base",
-    kind: "approval",
-    details: {
-      action: "clear_knowledge_base",
-      documents: ["https://innovationisttech.com/"],
-      summary:
-        "Delete 1 document(s) from this session, along with their image descriptions and this conversation.",
-    },
-  },
-};
+describe("chat stream events", () => {
+  it("reads a text chunk", () => {
+    expect(parseZizaChatEvent("text", { text: "Hi" })).toEqual({
+      type: "text",
+      text: "Hi",
+    });
+  });
 
-const INPUT_FRAME = {
-  type: "chat.input_required",
-  pending_call: {
-    tool_call_id: "toolu_02",
-    tool_name: "add_url_to_knowledge_base",
-    kind: "call",
-    details: {
-      action: "add_url_to_knowledge_base",
-      url: "https://innovationisttech.com/",
-      page_title: "Innovationist Technology Solutions",
+  it("rejects an event name it does not know", () => {
+    expect(parseZizaChatEvent("toString", {})).toBeNull();
+    expect(parseZizaChatEvent("chunk", { chunk: "Hi" })).toBeNull();
+  });
+
+  it("reads the passages ziza found, without scores", () => {
+    const event = parseZizaChatEvent("working", {
+      kind: "passages",
+      passages: [
+        { number: 1, title: "handbook.pdf", locator: "p. 3", excerpt: "Cap" },
+      ],
+    });
+    expect(event).toMatchObject({
+      type: "working",
+      passages: [{ number: 1, title: "handbook.pdf" }],
+    });
+  });
+
+  it("reads suggestions as plain strings", () => {
+    expect(parseZizaChatEvent("suggestions", { follow_ups: ["Why?"] })).toEqual(
+      { type: "suggestions", follow_ups: ["Why?"] },
+    );
+  });
+
+  it("reads a done event with no refusal", () => {
+    expect(
+      parseZizaChatEvent("done", {
+        answered: true,
+        small_talk: false,
+        usage: {},
+        refusal: null,
+        pending_action: null,
+      }),
+    ).toMatchObject({ type: "done", refusal: null });
+  });
+});
+
+describe("pending cards", () => {
+  it("marks only the session clear as destructive", () => {
+    const clear = toPendingApproval({
+      action_id: "act_1",
+      tool: "clear_session_knowledge",
+      description: "Remove everything",
+      expires_at: "2026-11-12T10:00:00Z",
+    });
+    expect(clear).toEqual({
+      kind: "approval",
+      id: "act_1",
+      toolName: "clear_session_knowledge",
+      description: "Remove everything",
+      isDestructive: true,
+    });
+    expect(
+      toPendingApproval({ action_id: "act_2", tool: "send_email" })
+        .isDestructive,
+    ).toBe(false);
+  });
+
+  // The page leads ziza's list, but it is not a choice: taking the offer
+  // always indexes it.
+  it("keeps the page out of the link choices", () => {
+    const offer = toPendingLinkOffer({
+      offer_id: "off_1",
+      page_url: "https://example.com/",
       links: [
-        { url: "https://innovationisttech.com/blog", text: "Blog" },
-        { url: "https://innovationisttech.com/services", text: "Services" },
+        { url: "https://example.com/", title: "Home" },
+        { url: "https://example.com/pricing", title: "Pricing" },
       ],
-      slots_left: 4,
-      summary: "Index Innovationist Technology Solutions, and choose any of…",
-    },
-  },
-};
-
-function parseCall(frame: unknown) {
-  const parsed = ZizaAgentEventSchema.parse(frame);
-  if (
-    parsed.type !== "chat.approval_required" &&
-    parsed.type !== "chat.input_required"
-  ) {
-    throw new Error("expected a deferral event");
-  }
-  return toPendingCall(parsed.pending_call);
-}
-
-describe("the approval frame", () => {
-  it("is not mistaken for a text delta", () => {
-    expect(ZizaTextFrameSchema.safeParse(APPROVAL_FRAME).success).toBe(false);
-  });
-
-  it("parses as an agent event so the route forwards it", () => {
-    expect(ZizaAgentEventSchema.safeParse(APPROVAL_FRAME).success).toBe(true);
-  });
-
-  it("carries the call id, summary and documents through the mapper", () => {
-    const call = parseCall(APPROVAL_FRAME);
-    expect(call.kind).toBe("approval");
-    expect(call.toolCallId).toBe("toolu_01AxASaNG7y1vyVu4tW4cCkG");
-    expect(call.summary).toContain("Delete 1 document(s)");
-    if (call.kind !== "approval") {
-      throw new Error("expected an approval");
-    }
-    expect(call.documents).toEqual(["https://innovationisttech.com/"]);
-    expect(call.isDestructive).toBe(true);
-  });
-
-  it("lets an explicit severity override the tool name", () => {
-    const call = parseCall({
-      ...APPROVAL_FRAME,
-      pending_call: {
-        ...APPROVAL_FRAME.pending_call,
-        details: { ...APPROVAL_FRAME.pending_call.details, severity: "info" },
-      },
+      expires_at: null,
     });
-    expect(call.kind === "approval" && call.isDestructive).toBe(false);
-  });
-
-  it("treats an unknown gated tool as ordinary, not dangerous", () => {
-    const call = parseCall({
-      type: "chat.approval_required",
-      pending_call: {
-        tool_call_id: "toolu_03",
-        tool_name: "some_future_tool",
-        kind: "approval",
-        details: {},
-      },
-    });
-    expect(call.kind === "approval" && call.isDestructive).toBe(false);
+    expect(offer.links).toEqual([
+      { url: "https://example.com/pricing", title: "Pricing" },
+    ]);
+    expect(offer.pageTitle).toBe("Home");
   });
 });
 
-describe("the input-required frame", () => {
-  it("parses as an agent event so the route forwards it", () => {
-    expect(ZizaAgentEventSchema.safeParse(INPUT_FRAME).success).toBe(true);
-  });
-
-  it("carries the page and its offered links through the mapper", () => {
-    const call = parseCall(INPUT_FRAME);
-    expect(call.kind).toBe("call");
-    if (call.kind !== "call") {
-      throw new Error("expected a deferred call");
-    }
-    expect(call.pageUrl).toBe("https://innovationisttech.com/");
-    expect(call.pageTitle).toBe("Innovationist Technology Solutions");
-    expect(call.links).toHaveLength(2);
-    expect(call.slotsLeft).toBe(4);
-  });
-
-  it("survives a page with no title", () => {
-    const call = parseCall({
-      ...INPUT_FRAME,
-      pending_call: {
-        ...INPUT_FRAME.pending_call,
-        details: { ...INPUT_FRAME.pending_call.details, page_title: null },
+describe("errors", () => {
+  it("reads the code from details", () => {
+    const body = ZizaErrorBodySchema.parse({
+      error: "rate_limited",
+      message: "Slow down",
+      status_code: 429,
+      details: {
+        code: "rate_limited",
+        message: "Slow down",
+        retry_after_seconds: 30,
       },
     });
-    expect(call.kind === "call" && call.pageTitle).toBeUndefined();
+    expect(toZizaFailure(429, body)).toEqual({
+      httpStatus: 429,
+      code: "rate_limited",
+      message: "Slow down",
+      retryAfterSeconds: 30,
+    });
   });
 
-  it("survives metadata from a deferred tool it has never seen", () => {
-    const parsed = ZizaAgentEventSchema.safeParse({
-      type: "chat.input_required",
-      pending_call: {
-        tool_call_id: "toolu_04",
-        tool_name: "some_future_tool",
-        kind: "call",
-        details: { rows_affected: 12 },
-      },
+  it("survives a body that is not ziza's", () => {
+    expect(toZizaFailure(502, null)).toEqual({
+      httpStatus: 502,
+      code: undefined,
+      message: undefined,
+      retryAfterSeconds: undefined,
     });
-    expect(parsed.success).toBe(true);
   });
 });
 
-describe("the suggestions frame", () => {
-  const SUGGESTIONS_FRAME = {
-    type: "chat.suggestions",
-    suggestions: [
-      {
-        kind: "add_page",
-        label: "Index innovationisttech.com",
-        message: "Add https://innovationisttech.com/ to my knowledge base",
-        url: "https://innovationisttech.com/",
-      },
-    ],
-  };
-
-  it("parses as an agent event so the route forwards it", () => {
-    expect(ZizaAgentEventSchema.safeParse(SUGGESTIONS_FRAME).success).toBe(
-      true,
-    );
-  });
-
-  it("round-trips the chip label and the message it sends", () => {
-    const parsed = ZizaAgentEventSchema.parse(SUGGESTIONS_FRAME);
-    if (parsed.type !== "chat.suggestions") {
-      throw new Error("expected a suggestions event");
-    }
-    expect(parsed.suggestions).toHaveLength(1);
-    expect(parsed.suggestions[0].label).toBe("Index innovationisttech.com");
-    expect(parsed.suggestions[0].message).toBe(
-      "Add https://innovationisttech.com/ to my knowledge base",
-    );
-  });
-
-  // More kinds are coming server-side. An unrecognised one must still parse,
-  // so the chip renders and falls back to sending `message`.
-  it("parses a kind the frontend has never seen", () => {
-    const parsed = ZizaAgentEventSchema.safeParse({
-      type: "chat.suggestions",
-      suggestions: [
-        { kind: "some_future_kind", label: "Do the thing", message: "do it" },
-      ],
-    });
-    expect(parsed.success).toBe(true);
-  });
-
-  it("survives a suggestion with no url", () => {
-    const parsed = ZizaAgentEventSchema.safeParse({
-      type: "chat.suggestions",
-      suggestions: [{ kind: "add_page", label: "Upload", message: "help" }],
-    });
-    expect(parsed.success).toBe(true);
-  });
-});
-
-describe("the ingest response", () => {
-  const INGEST_RESPONSE = {
-    session_id: "s1",
-    source: "handbook.pdf",
-    chunks_ingested: 12,
-    searchable: true,
-    images_described: 2,
-    images_failed: 0,
-    documents_used: 1,
-    documents_allowed: 5,
-    pages_summarised: 0,
-  };
-
-  // The backend does not generate starter questions yet, so today's responses
-  // omit the field entirely and must still parse.
-  it("parses without the suggestions the backend has yet to send", () => {
-    const parsed = KnowledgeIngestResponseSchema.safeParse(INGEST_RESPONSE);
-    expect(parsed.success).toBe(true);
-    expect(parsed.success && parsed.data.suggestions).toEqual([]);
-  });
-
-  it("carries starter questions once they arrive", () => {
-    const parsed = KnowledgeIngestResponseSchema.parse({
-      ...INGEST_RESPONSE,
-      suggestions: [
-        {
-          kind: "ask",
-          label: "What happens if the release captain is on leave?",
-          message: "What happens if the release captain is on leave?",
-        },
-      ],
-    });
-    expect(parsed.suggestions).toHaveLength(1);
-    expect(parsed.suggestions[0].kind).toBe("ask");
-  });
-});
-
-// Verbatim from a real 201. The `"url": null` here is the whole point: a bare
-// `.optional()` rejects null, which failed the entire response — so a stored
-// document surfaced as "Failed (201)" and its questions were thrown away.
-describe("a real ingest response", () => {
-  const LIVE_RESPONSE = {
-    session_id: "769fec48-95d5-4fb9-ae00-9700798066b4",
-    source: "Screenshot 2026-09-12 at 3.29.46 PM.png",
-    chunks_ingested: 1,
-    images_described: 1,
-    pages_summarised: 0,
-    documents_used: 2,
-    documents_allowed: 10,
-    images_failed: 0,
-    searchable: true,
-    suggestions: [
-      {
-        kind: "ask",
-        label:
-          "What file formats does the AI chatbot accept for source uploads?",
-        message:
-          "What file formats does the AI chatbot accept for source uploads?",
-        url: null,
-      },
-      {
-        kind: "ask",
-        label:
-          "What is the localhost port and path for this AI chatbot interface?",
-        message:
-          "What is the localhost port and path for this AI chatbot interface?",
-        url: null,
-      },
-    ],
-  };
-
-  it("parses, rather than failing the upload over a null url", () => {
-    const parsed = KnowledgeIngestResponseSchema.safeParse(LIVE_RESPONSE);
-    expect(parsed.success).toBe(true);
-  });
-
-  it("keeps both starter questions", () => {
-    const parsed = KnowledgeIngestResponseSchema.parse(LIVE_RESPONSE);
-    expect(parsed.suggestions).toHaveLength(2);
-    expect(parsed.suggestions[0].kind).toBe("ask");
-  });
-
-  it("carries session capacity through", () => {
-    const parsed = KnowledgeIngestResponseSchema.parse(LIVE_RESPONSE);
-    expect(parsed.documents_used).toBe(2);
-    expect(parsed.documents_allowed).toBe(10);
-  });
-
-  it("still accepts a suggestion whose url is simply absent", () => {
-    const parsed = KnowledgeIngestResponseSchema.safeParse({
-      ...LIVE_RESPONSE,
-      suggestions: [{ kind: "ask", label: "Why?", message: "Why?" }],
-    });
-    expect(parsed.success).toBe(true);
-  });
-});
-
-describe("the starter-question recovery read", () => {
-  it("carries the document its questions are about", () => {
-    const parsed = KnowledgeSuggestionsResponseSchema.parse({
-      session_id: "s1",
-      document: "handbook.pdf",
-      suggestions: [
-        {
-          kind: "ask",
-          label: "What happens if the release captain is on leave?",
-          message: "What happens if the release captain is on leave?",
-        },
-      ],
-    });
-    expect(parsed.document).toBe("handbook.pdf");
-    expect(parsed.suggestions).toHaveLength(1);
-  });
-
-  // A session with nothing in it, and a document nothing could be asked about,
-  // are both normal answers rather than failures.
-  it("accepts an empty session", () => {
-    const parsed = KnowledgeSuggestionsResponseSchema.parse({
-      session_id: "s1",
-      document: null,
-      suggestions: [],
-    });
-    expect(parsed.document).toBeNull();
-    expect(parsed.suggestions).toEqual([]);
-  });
-
-  it("accepts a document that yielded no questions", () => {
-    const parsed = KnowledgeSuggestionsResponseSchema.parse({
-      session_id: "s1",
-      document: "login-wall.html",
-      suggestions: [],
-    });
-    expect(parsed.suggestions).toEqual([]);
-  });
-});
-
-describe("the chat history read", () => {
-  const HISTORY_PAGE = {
-    session_id: "769fec48-95d5-4fb9-ae00-9700798066b4",
-    turns: [
-      {
-        id: "68c4a1-0",
-        role: "user",
-        text: "who is Sarah?",
-        at: "2026-09-13T09:00:00Z",
-      },
-      {
-        id: "68c4a1-1",
-        role: "assistant",
-        text: "Sarah leads the platform team.",
-        at: "2026-09-13T09:00:00Z",
-      },
-    ],
-    has_more: true,
-    next_before: "2026-09-13T09:00:00Z",
-  };
-
-  it("maps turns in the order they render", () => {
-    const page = toChatHistoryPage(
-      ChatHistoryResponseSchema.parse(HISTORY_PAGE),
-    );
-    expect(page.turns.map((turn) => turn.role)).toEqual(["user", "assistant"]);
-    expect(page.turns[0].id).toBe("68c4a1-0");
-    expect(page.turns[1].text).toBe("Sarah leads the platform team.");
-  });
-
-  it("carries the cursor for the page before it", () => {
-    const page = toChatHistoryPage(
-      ChatHistoryResponseSchema.parse(HISTORY_PAGE),
-    );
-    expect(page.hasMore).toBe(true);
-    expect(page.nextBefore).toBe("2026-09-13T09:00:00Z");
-  });
-
-  // `next_before` is null on the last page; the cursor must read as absent
-  // rather than as the string "null".
-  it("normalises the end of the history to null", () => {
-    const page = toChatHistoryPage(
-      ChatHistoryResponseSchema.parse({
-        ...HISTORY_PAGE,
-        has_more: false,
-        next_before: null,
+describe("ingest jobs", () => {
+  it("describes embedding progress", () => {
+    const job = toSessionJob(
+      ZizaJobViewSchema.parse({
+        id: "job_1",
+        kind: "ingest_file",
+        status: "processing",
+        attempts: 1,
+        progress: { step: "embedding", done: 3, total: 10 },
+        result: null,
+        error: null,
+        created_at: "2026-11-12T10:00:00Z",
+        finished_at: null,
       }),
     );
-    expect(page.hasMore).toBe(false);
-    expect(page.nextBefore).toBeNull();
+    expect(job.progressLabel).toBe("embedding 3/10");
   });
 
-  it("accepts a session with no conversation yet", () => {
-    const page = toChatHistoryPage(
-      ChatHistoryResponseSchema.parse({ session_id: "s1", turns: [] }),
+  it("carries the source id once done", () => {
+    const job = toSessionJob(
+      ZizaJobViewSchema.parse({
+        id: "job_1",
+        status: "done",
+        progress: { step: "storing", total: 10 },
+        result: {
+          source_id: "src_1",
+          chunks: 10,
+          embedded: 10,
+          cached_embeddings: 0,
+          images_found: 2,
+          images_described: 1,
+          images_from_cache: 0,
+          images_skipped: 0,
+          images_failed: 1,
+          images_not_described: 1,
+          summary_added: false,
+          spend_cap_reached: false,
+          notes: [],
+          starters_job_id: "job_starters",
+        },
+      }),
     );
-    expect(page.turns).toEqual([]);
-    expect(page.hasMore).toBe(false);
-    expect(page.nextBefore).toBeNull();
+    expect(job.startersJobId).toBe("job_starters");
+    expect(job.result).toEqual({
+      sourceId: "src_1",
+      chunks: 10,
+      imagesDescribed: 1,
+      imagesSkipped: 0,
+      imagesFailed: 1,
+    });
+  });
+
+  // A starters job's result names no source; the job must still parse so
+  // its status can be followed.
+  it("reads a starters job, which has no source", () => {
+    const job = toSessionJob(
+      ZizaJobViewSchema.parse({
+        id: "job_starters",
+        kind: "starters",
+        status: "done",
+        result: { starters: 3 },
+      }),
+    );
+    expect(job.status).toBe("done");
+    expect(job.result).toBeUndefined();
+  });
+
+  it("reads the questions a starters job wrote for its upload", () => {
+    const job = toSessionJob(
+      ZizaJobViewSchema.parse({
+        id: "job_starters",
+        kind: "starters",
+        status: "done",
+        result: { starters: 2, questions: ["Who covers leave?", "How long?"] },
+      }),
+    );
+    expect(job.starterQuestions).toEqual(["Who covers leave?", "How long?"]);
+  });
+
+  it("has no questions when the starters job skipped", () => {
+    const job = toSessionJob(
+      ZizaJobViewSchema.parse({
+        id: "job_starters",
+        kind: "starters",
+        status: "done",
+        result: { starters: 0 },
+      }),
+    );
+    expect(job.starterQuestions).toBeUndefined();
+  });
+
+  it("has no starters job when the product turns starters off", () => {
+    const job = toSessionJob(
+      ZizaJobViewSchema.parse({
+        id: "job_1",
+        status: "done",
+        result: { source_id: "src_1", chunks: 1, starters_job_id: null },
+      }),
+    );
+    expect(job.startersJobId).toBeUndefined();
+  });
+
+  it("carries the failure message", () => {
+    const job = toSessionJob(
+      ZizaJobViewSchema.parse({
+        id: "job_1",
+        status: "failed",
+        error: { type: "extraction", message: "No text", retryable: false },
+      }),
+    );
+    expect(job.errorMessage).toBe("No text");
   });
 });
 
-describe("the session sources read", () => {
-  const SOURCES_RESPONSE = {
-    session_id: "769fec48-95d5-4fb9-ae00-9700798066b4",
-    documents_used: 2,
-    documents_allowed: 10,
-    sources: [
+describe("the sources read", () => {
+  it("restores rows in the order they were added, keyed by source id", () => {
+    const sources = toSessionSources(
+      ZizaSourcesPageSchema.parse({
+        items: [
+          {
+            source_id: "src_2",
+            title: "b.pdf",
+            kind: "file",
+            added_at: "2026-11-12T10:05:00Z",
+            status: "active",
+          },
+          {
+            source_id: "src_1",
+            title: "https://example.com/",
+            kind: "url",
+            added_at: "2026-11-12T10:00:00Z",
+            status: "pending",
+          },
+        ],
+        total: 2,
+        limit: 50,
+        skip: 0,
+      }),
+    );
+    expect(sources.map((source) => [source.sourceId, source.status])).toEqual([
+      ["src_1", "processing"],
+      ["src_2", "indexed"],
+    ]);
+    expect(sources[0].kind).toBe("url");
+  });
+});
+
+describe("the history read", () => {
+  const page = ZizaHistoryPageSchema.parse({
+    turns: [
       {
-        document: "https://innovationisttech.com/",
-        kind: "url",
-        chunks: 4,
-        added_at: "2026-09-13T04:22:00Z",
+        id: "t2",
+        user_text: "Clear it",
+        answer_text: "",
+        citations: [],
+        answered: false,
+        cited: false,
+        small_talk: false,
+        unfinished_action: { description: "Clear all", reason: "expired" },
+        created_at: "2026-11-12T10:05:00Z",
       },
       {
-        document: "handbook.pdf",
-        kind: "file",
-        chunks: 9,
-        added_at: "2026-09-13T04:21:00Z",
+        id: "t1",
+        user_text: "Who rotates?",
+        answer_text: "Weekly [1].",
+        citations: [
+          {
+            number: 1,
+            record_id: "r1",
+            source_id: "src_1",
+            source_ref: "handbook.pdf",
+            locator: "p. 3",
+            score: 0.8,
+            removed: true,
+          },
+        ],
+        answered: true,
+        cited: true,
+        small_talk: false,
+        unfinished_action: null,
+        created_at: "2026-11-12T10:00:00Z",
       },
     ],
-  };
-
-  it("restores rows the panel can render", () => {
-    const restored = toSessionSources(
-      KnowledgeSourcesResponseSchema.parse(SOURCES_RESPONSE),
-    );
-    expect(restored.documentsUsed).toBe(2);
-    expect(restored.documentsAllowed).toBe(10);
-    expect(restored.sources).toHaveLength(2);
-    expect(
-      restored.sources.every((source) => source.status === "indexed"),
-    ).toBe(true);
+    next_before: null,
   });
 
-  it("orders them as they were added, not as they arrived", () => {
-    const restored = toSessionSources(
-      KnowledgeSourcesResponseSchema.parse(SOURCES_RESPONSE),
-    );
-    expect(restored.sources.map((source) => source.label)).toEqual([
-      "handbook.pdf",
-      "https://innovationisttech.com/",
+  it("expands each exchange into two messages, oldest first", () => {
+    expect(toChatHistoryPage(page).turns.map((turn) => turn.id)).toEqual([
+      "t1:user",
+      "t1:assistant",
+      "t2:user",
+      "t2:assistant",
     ]);
   });
 
-  // `document` is the identity the backend keys on, so rows key on it too.
-  it("keys rows on the document, not a generated id", () => {
-    const restored = toSessionSources(
-      KnowledgeSourcesResponseSchema.parse(SOURCES_RESPONSE),
-    );
-    expect(restored.sources[0].id).toBe("handbook.pdf");
-    expect(restored.sources[0].kind).toBe("file");
-    expect(restored.sources[1].kind).toBe("url");
+  it("marks a removed source on the citation", () => {
+    expect(toChatHistoryPage(page).turns[1].citations).toEqual([
+      {
+        number: 1,
+        sourceId: "src_1",
+        sourceRef: "handbook.pdf",
+        locator: "p. 3",
+        isRemoved: true,
+      },
+    ]);
   });
 
-  it("accepts a session that holds nothing", () => {
-    const parsed = KnowledgeSourcesResponseSchema.parse({
-      session_id: "s1",
-      documents_used: 0,
-      documents_allowed: 10,
-      sources: [],
+  it("carries an unfinished action onto the answer", () => {
+    expect(toChatHistoryPage(page).turns[3].unfinishedAction).toEqual({
+      description: "Clear all",
+      reason: "expired",
     });
-    expect(toSessionSources(parsed).sources).toEqual([]);
+  });
+
+  it("ends the history at a null cursor", () => {
+    expect(toChatHistoryPage(page).nextBefore).toBeNull();
   });
 });
 
-describe("a text frame", () => {
-  it("still parses as a delta despite carrying a type", () => {
-    expect(
-      ZizaTextFrameSchema.safeParse({ type: "chat.chunk", chunk: "hello" })
-        .success,
-    ).toBe(true);
-  });
-});
-
-describe("the chat.error frame", () => {
-  const CHAT_ERROR_FRAME = { type: "chat.error" };
-
-  it("parses as an agent event so the route forwards it", () => {
-    expect(ZizaAgentEventSchema.safeParse(CHAT_ERROR_FRAME).success).toBe(true);
-  });
-
-  // `format_sse` serialises with `exclude_none`, so the frame carries the type
-  // and nothing else — a schema demanding a `message` would reject it.
-  it("needs no message alongside the type", () => {
-    const parsed = ZizaAgentEventSchema.parse(CHAT_ERROR_FRAME);
-    expect(parsed.type).toBe("chat.error");
-  });
-
-  // It is tried after the text schema, which matches on a `chunk` string
-  // alone — the apology that precedes this frame must stay a text delta.
-  it("is not mistaken for a text delta", () => {
-    expect(ZizaTextFrameSchema.safeParse(CHAT_ERROR_FRAME).success).toBe(false);
+describe("a resumed turn", () => {
+  it("can ask for another approval", () => {
+    const turn = toResumedTurn(
+      ZizaResumedTurnSchema.parse({
+        text: "Done.",
+        citations: [],
+        approval_required: {
+          type: "approval_required",
+          action_id: "act_2",
+          tool: "clear_session_knowledge",
+        },
+        suggestions: { follow_ups: ["What next?"] },
+        refusal: null,
+        failure: null,
+      }),
+    );
+    expect(turn.approvalRequired?.id).toBe("act_2");
+    expect(turn.followUps).toEqual(["What next?"]);
   });
 });

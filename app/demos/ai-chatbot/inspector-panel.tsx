@@ -13,7 +13,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   type InspectorEntry,
-  type RetrievedChunk,
+  type RetrievedPassage,
 } from "@/lib/ziza/ziza.types";
 
 const LEVEL_CLASS: Record<InspectorEntry["level"], string> = {
@@ -26,13 +26,13 @@ const LEVEL_CLASS: Record<InspectorEntry["level"], string> = {
 
 type InspectorPanelProps = {
   entries: readonly InspectorEntry[];
-  chunks: readonly RetrievedChunk[];
+  passages: readonly RetrievedPassage[];
   onClearAction: () => void;
 };
 
 export function InspectorPanel({
   entries,
-  chunks,
+  passages,
   onClearAction,
 }: InspectorPanelProps) {
   return (
@@ -107,7 +107,7 @@ export function InspectorPanel({
         <TabsContent value="chunks" className="mt-0 min-h-0 flex-1">
           <ScrollArea className="h-full">
             <div className="min-w-0 space-y-3 p-3">
-              {chunks.length === 0 ? (
+              {passages.length === 0 ? (
                 <Empty className="p-0">
                   <EmptyHeader>
                     <EmptyMedia variant="icon">
@@ -118,25 +118,30 @@ export function InspectorPanel({
                     </EmptyTitle>
                     <EmptyDescription className="font-mono text-[0.6875rem]">
                       Once it searches, the passages it found land here with
-                      their source and score.
+                      their source.
                     </EmptyDescription>
                   </EmptyHeader>
                 </Empty>
               ) : (
-                chunks.map((chunk) => (
+                passages.map((passage) => (
                   <article
-                    key={chunk.id}
+                    key={passage.id}
                     className="border-border bg-card rounded-md border p-2.5"
                   >
-                    <header className="text-muted-foreground mb-1.5 flex items-center justify-between font-mono text-[0.625rem] tracking-wide uppercase">
-                      <span className="min-w-0 truncate">{chunk.source}</span>
+                    <header className="text-muted-foreground mb-1.5 flex items-center justify-between gap-2 font-mono text-[0.625rem] tracking-wide uppercase">
+                      <span className="min-w-0 truncate">
+                        {passage.title ?? "untitled"}
+                        {passage.locator ? ` · ${passage.locator}` : ""}
+                      </span>
                       <span className="text-primary shrink-0">
-                        {chunk.score.toFixed(2)}
+                        [{passage.number}]
                       </span>
                     </header>
-                    <p className="font-sans text-xs leading-relaxed break-words">
-                      {chunk.text}
-                    </p>
+                    {passage.excerpt ? (
+                      <p className="font-sans text-xs leading-relaxed break-words">
+                        {passage.excerpt}…
+                      </p>
+                    ) : null}
                   </article>
                 ))
               )}

@@ -8,18 +8,21 @@ function renderPanel(
   overrides: Partial<Parameters<typeof SourcesPanel>[0]> = {},
 ) {
   const onAddFileAction = vi.fn();
+  const onRemoveSourceAction = vi.fn();
+  const onClearSessionAction = vi.fn();
   render(
     <SourcesPanel
       sources={[]}
-      activeSourceLabels={[]}
+      activeSourceIds={[]}
       isReady
       elapsedTick={0}
       onAddFileAction={onAddFileAction}
-      onClearAllAction={vi.fn()}
+      onRemoveSourceAction={onRemoveSourceAction}
+      onClearSessionAction={onClearSessionAction}
       {...overrides}
     />,
   );
-  return { onAddFileAction };
+  return { onAddFileAction, onRemoveSourceAction, onClearSessionAction };
 }
 
 function textFile(name: string, contents = "hello") {
@@ -104,6 +107,64 @@ describe("the sources panel", () => {
     });
     expect(screen.getByText("handbook.pdf")).toBeInTheDocument();
     expect(screen.getByText(/12 chunks/)).toBeInTheDocument();
+  });
+
+  it("removes a single document from its own row", async () => {
+    const handbook = {
+      id: "1",
+      sourceId: "src_1",
+      label: "handbook.pdf",
+      kind: "file" as const,
+      chunkCount: 12,
+      status: "indexed" as const,
+    };
+    const { onRemoveSourceAction } = renderPanel({ sources: [handbook] });
+    await userEvent.click(
+      screen.getByRole("button", { name: "Remove handbook.pdf" }),
+    );
+    expect(onRemoveSourceAction).toHaveBeenCalledWith(handbook);
+  });
+
+  // Until its job finishes there is no source id for ziza to remove.
+  it("offers no removal while a document is still being ingested", () => {
+    renderPanel({
+      sources: [
+        {
+          id: "1",
+          jobId: "job_1",
+          label: "handbook.pdf",
+          kind: "file",
+          chunkCount: 0,
+          status: "processing",
+          progressLabel: "embedding 3/10",
+        },
+      ],
+    });
+    expect(
+      screen.queryByRole("button", { name: "Remove handbook.pdf" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("embedding 3/10")).toBeInTheDocument();
+  });
+
+  it("says the bin clears the chat as well as the documents", async () => {
+    const { onClearSessionAction } = renderPanel({
+      sources: [
+        {
+          id: "1",
+          sourceId: "src_1",
+          label: "handbook.pdf",
+          kind: "file",
+          chunkCount: 12,
+          status: "indexed",
+        },
+      ],
+    });
+    await userEvent.click(
+      screen.getByRole("button", {
+        name: "Clear the session: all sources and the chat",
+      }),
+    );
+    expect(onClearSessionAction).toHaveBeenCalledTimes(1);
   });
 });
 

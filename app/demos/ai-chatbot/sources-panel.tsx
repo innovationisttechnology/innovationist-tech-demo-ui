@@ -14,6 +14,7 @@ import {
   LinkIcon,
   TrashIcon,
   WarningIcon,
+  XIcon,
 } from "@phosphor-icons/react";
 
 import {
@@ -35,9 +36,8 @@ import { type KnowledgeSource } from "@/lib/ziza/ziza.types";
 
 const STATUS_LABEL: Record<KnowledgeSource["status"], string> = {
   uploading: "uploading…",
-  processing: "extracting…",
+  processing: "processing…",
   indexed: "indexed",
-  "pending-index": "indexing…",
   failed: "failed",
 };
 
@@ -45,7 +45,6 @@ const STATUS_CLASS: Record<KnowledgeSource["status"], string> = {
   uploading: "text-sky-600 dark:text-sky-300",
   processing: "text-amber-600 dark:text-amber-300",
   indexed: "text-emerald-600 dark:text-emerald-300",
-  "pending-index": "text-sky-600 dark:text-sky-300",
   failed: "text-rose-600 dark:text-rose-300",
 };
 
@@ -57,6 +56,7 @@ const EMPTY_HINTS = [
   "Paste a link in the chat instead, and Ziza offers to index that page along with the pages it links to.",
   "Answers come only from what is in here. Nothing added means nothing to answer from.",
   "Ask it to clear the knowledge base and it will ask you to confirm before anything is deleted.",
+  "Remove a single document with the × on its row; the bin up top starts the whole session over.",
 ];
 
 const HINT_ROTATION_MS = 7000;
@@ -87,13 +87,6 @@ function validateFile(file: File): string | undefined {
     return `We can't read ${extension} files. Try text, Markdown, CSV, JSON, YAML, PDF, DOCX, or an image.`;
   }
   return undefined;
-}
-
-function describeExtras(source: KnowledgeSource): string | undefined {
-  if (source.kind === "url") {
-    return source.pagesSummarised ? "page summary" : undefined;
-  }
-  return describeImages(source);
 }
 
 function describeImages(source: KnowledgeSource): string | undefined {
@@ -159,22 +152,25 @@ function droppedFolderNames(transfer: DataTransfer): string[] {
 
 type SourcesPanelProps = {
   sources: readonly KnowledgeSource[];
-  activeSourceLabels: readonly string[];
+  // ziza source ids the latest answer cited.
+  activeSourceIds: readonly string[];
   isReady: boolean;
   elapsedTick: number;
   capacity?: { used: number; allowed: number };
   onAddFileAction: (file: File) => void;
-  onClearAllAction: () => void;
+  onRemoveSourceAction: (source: KnowledgeSource) => void;
+  onClearSessionAction: () => void;
 };
 
 export function SourcesPanel({
   sources,
-  activeSourceLabels,
+  activeSourceIds,
   isReady,
   elapsedTick,
   capacity,
   onAddFileAction,
-  onClearAllAction,
+  onRemoveSourceAction,
+  onClearSessionAction,
 }: SourcesPanelProps) {
   const [notice, setNotice] = useState("");
   const [hintIndex, setHintIndex] = useState(0);
@@ -326,8 +322,9 @@ export function SourcesPanel({
           {sources.length > 0 ? (
             <button
               type="button"
-              onClick={onClearAllAction}
-              aria-label="Clear all sources"
+              onClick={onClearSessionAction}
+              aria-label="Clear the session: all sources and the chat"
+              title="Clear the session: all sources and the chat"
               className="hover:text-destructive transition-colors"
             >
               <TrashIcon className="size-3" />
@@ -362,10 +359,12 @@ export function SourcesPanel({
         ) : (
           <ul className="p-2">
             {sources.map((source) => {
-              const isActive = activeSourceLabels.includes(source.label);
+              const isActive =
+                source.sourceId !== undefined &&
+                activeSourceIds.includes(source.sourceId);
               const isBusy =
                 source.status === "uploading" || source.status === "processing";
-              const imageSummary = describeExtras(source);
+              const imageSummary = describeImages(source);
               // elapsedTick is a prop only to force the per-second re-render.
               const elapsedSeconds =
                 isBusy && source.startedAt
@@ -401,7 +400,9 @@ export function SourcesPanel({
                           : ""}
                         {imageSummary ? `${imageSummary} · ` : ""}
                         <span className={STATUS_CLASS[source.status]}>
-                          {STATUS_LABEL[source.status]}
+                          {isBusy && source.progressLabel
+                            ? source.progressLabel
+                            : STATUS_LABEL[source.status]}
                           {elapsedSeconds !== undefined
                             ? ` ${elapsedSeconds}s`
                             : ""}
@@ -413,6 +414,20 @@ export function SourcesPanel({
                         </span>
                       ) : null}
                     </ItemContent>
+                    {/*
+                      Only a finished or failed row can go: a document still
+                      being ingested has no source id to remove yet.
+                    */}
+                    {isBusy ? null : (
+                      <button
+                        type="button"
+                        onClick={() => onRemoveSourceAction(source)}
+                        aria-label={`Remove ${source.label}`}
+                        className="text-muted-foreground hover:text-destructive shrink-0 self-start transition-colors"
+                      >
+                        <XIcon className="size-3" />
+                      </button>
+                    )}
                   </Item>
                 </li>
               );

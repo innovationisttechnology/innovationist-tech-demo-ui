@@ -21,7 +21,13 @@ import {
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { type PendingCall, type Suggestion } from "@/lib/ziza/ziza.types";
+import {
+  type ApprovalDecision,
+  type Citation,
+  type PendingCall,
+  type UnfinishedAction,
+} from "@/lib/ziza/ziza.types";
+import { CitationList } from "./citation-list";
 import { DeferredCallCard } from "./deferred-call-card";
 import { StarterQuestions } from "./starter-questions";
 import { SuggestionChips } from "./suggestion-chips";
@@ -30,6 +36,13 @@ export type ChatTurn = {
   id: string;
   role: "user" | "assistant";
   text: string;
+  citations?: readonly Citation[];
+  unfinishedAction?: UnfinishedAction;
+};
+
+const UNFINISHED_REASON_LABEL: Record<string, string> = {
+  cancelled: "cancelled",
+  expired: "expired",
 };
 
 // Deltas are token-sized and undebounced, so an unmemoised bubble re-parses
@@ -56,26 +69,37 @@ function TypingIndicator() {
   );
 }
 
+// Recovered starters belong to an empty conversation; an upload's own
+// starters are offered mid-conversation too.
+export type StarterQuestionsOrigin = "recovered" | "upload";
+
 type ChatPanelProps = {
   turns: readonly ChatTurn[];
   isStreaming: boolean;
   isReady: boolean;
   errorMessage?: string;
   pendingCalls: readonly PendingCall[];
-  suggestions: readonly Suggestion[];
-  starterQuestions: readonly Suggestion[];
+  suggestions: readonly string[];
+  starterQuestions: readonly string[];
+  starterQuestionsOrigin: StarterQuestionsOrigin;
   // Which card is mid-request, so only that one shows as busy.
   resolvingCallId: string | null;
+  slotsLeft?: number;
+  // Set once a turn failed or was refused by a limit; what ziza said about it.
+  streamFailureMessage?: string;
   canRetry: boolean;
   onRetryAction: () => void;
   onSendAction: (message: string) => void;
   onLoadOlderTurnsAction: () => void;
-  onApprovalDecisionAction: (toolCallId: string, approved: boolean) => void;
+  onApprovalDecisionAction: (
+    actionId: string,
+    decision: ApprovalDecision,
+  ) => void;
   onLinkSelectionAction: (
-    toolCallId: string,
+    offerId: string,
     selectedLinks: readonly string[],
   ) => void;
-  onDismissCallAction: (toolCallId: string) => void;
+  onDismissCallAction: (callId: string) => void;
 };
 
 export function ChatPanel({
@@ -86,7 +110,10 @@ export function ChatPanel({
   pendingCalls,
   suggestions,
   starterQuestions,
+  starterQuestionsOrigin,
   resolvingCallId,
+  slotsLeft,
+  streamFailureMessage,
   canRetry,
   onRetryAction,
   onSendAction,
@@ -97,7 +124,10 @@ export function ChatPanel({
 }: ChatPanelProps) {
   // Chips call onSendAction directly, bypassing handleSend's streaming guard,
   // so a click mid-stream would cut the answer off.
-  const showStarterQuestions = starterQuestions.length > 0 && !isStreaming;
+  const showStarterQuestions =
+    starterQuestions.length > 0 &&
+    !isStreaming &&
+    (turns.length === 0 || starterQuestionsOrigin === "upload");
 
   const [draft, setDraft] = useState("");
   const [notice, setNotice] = useState("");
@@ -106,6 +136,7 @@ export function ChatPanel({
   const previousFirstTurnId = useRef<string | undefined>(undefined);
   const previousScrollHeight = useRef(0);
   const logRef = useRef<HTMLDivElement>(null);
+  const midConversationStartersRef = useRef<HTMLDivElement>(null);
 
   const findViewport = () =>
     scrollAreaRef.current?.querySelector<HTMLElement>(
@@ -149,6 +180,27 @@ export function ChatPanel({
     previousFirstTurnId.current = currentFirstId;
     previousScrollHeight.current = viewport.scrollHeight;
   }, [turns, isStreaming, pendingCalls]);
+
+  const showMidConversationStarters = turns.length > 0 && showStarterQuestions;
+
+  // Upload starters land below history the visitor may not be looking at, and
+  // nothing above re-scrolls for them since the turns did not change. Their
+  // top, not the bottom, so the heading stays in view when they are tall.
+  // Smooth, so the visitor sees where they went.
+  useLayoutEffect(() => {
+    const viewport = findViewport();
+    const starters = midConversationStartersRef.current;
+    if (!viewport || !starters || !showMidConversationStarters) {
+      return;
+    }
+    viewport.scrollTo({
+      top:
+        viewport.scrollTop +
+        starters.getBoundingClientRect().top -
+        viewport.getBoundingClientRect().top,
+      behavior: "smooth",
+    });
+  }, [starterQuestions, showMidConversationStarters]);
 
   // Fires on every qualifying scroll, which is safe: the parent owns the
   // in-flight and has-more guards, so this is a no-op when there is nothing
@@ -275,6 +327,18 @@ export function ChatPanel({
                       {turn.text === "" ? null : (
                         <AssistantMessage text={turn.text} />
                       )}
+                      {turn.citations && turn.citations.length > 0 ? (
+                        <CitationList citations={turn.citations} />
+                      ) : null}
+                      {turn.unfinishedAction ? (
+                        <p className="text-muted-foreground font-mono text-xs">
+                          Not done: {turn.unfinishedAction.description} (
+                          {UNFINISHED_REASON_LABEL[
+                            turn.unfinishedAction.reason
+                          ] ?? turn.unfinishedAction.reason}
+                          )
+                        </p>
+                      ) : null}
                       {isAnswering ? <TypingIndicator /> : null}
                     </>
                   )}
@@ -291,11 +355,13 @@ export function ChatPanel({
           )}
 
           {/* Stands alone: a new document has nothing to do with the last reply. */}
-          {turns.length > 0 && showStarterQuestions ? (
-            <StarterQuestions
-              questions={starterQuestions}
-              onSendAction={onSendAction}
-            />
+          {showMidConversationStarters ? (
+            <div ref={midConversationStartersRef}>
+              <StarterQuestions
+                questions={starterQuestions}
+                onSendAction={onSendAction}
+              />
+            </div>
           ) : null}
 
           {/*
@@ -304,9 +370,10 @@ export function ChatPanel({
           */}
           {pendingCalls.map((call) => (
             <DeferredCallCard
-              key={call.toolCallId}
+              key={call.id}
               call={call}
-              isResolving={resolvingCallId === call.toolCallId}
+              isResolving={resolvingCallId === call.id}
+              slotsLeft={slotsLeft}
               onApprovalDecisionAction={onApprovalDecisionAction}
               onLinkSelectionAction={onLinkSelectionAction}
               onDismissAction={onDismissCallAction}
@@ -314,24 +381,30 @@ export function ChatPanel({
           ))}
 
           {/*
-            The apology itself arrives as ordinary answer text and is already
-            in the bubble above, so this offers the action and does not repeat
-            it. Re-sending is the only recovery: a stream that failed left
-            nothing server-side to resume from.
+            Re-sending is the only recovery: a stream that failed left nothing
+            server-side to resume from. A rate limit keeps the message up but
+            holds the button back until the wait is over.
           */}
-          {canRetry ? (
+          {streamFailureMessage || canRetry ? (
             <div className="border-border flex flex-wrap items-center gap-3 rounded-md border px-3 py-2">
               <p className="text-muted-foreground font-mono text-[0.625rem] tracking-widest uppercase">
                 answer cut short
               </p>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={onRetryAction}
-              >
-                Try again
-              </Button>
+              {streamFailureMessage ? (
+                <p className="text-muted-foreground min-w-0 flex-1 font-sans text-xs">
+                  {streamFailureMessage}
+                </p>
+              ) : null}
+              {canRetry ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={onRetryAction}
+                >
+                  Try again
+                </Button>
+              ) : null}
             </div>
           ) : null}
 

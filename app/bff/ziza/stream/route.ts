@@ -1,73 +1,78 @@
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { createUIMessageStream, createUIMessageStreamResponse } from "ai";
 
 import {
-  ZizaAgentEventSchema,
   ZizaChatRequestSchema,
-  ZizaTextFrameSchema,
+  parseZizaChatEvent,
 } from "@/lib/ziza/ziza.schema";
+import { toCitation } from "@/lib/ziza/ziza.mapper";
+import { readServerSentEvents } from "@/lib/ziza/ziza.sse";
+import {
+  REQUEST_ID_HEADER,
+  applySessionOutcome,
+  bffErrorResponse,
+  callZizaWithSession,
+  passThroughUpstreamError,
+  resolveZizaRequestContext,
+} from "@/lib/ziza/ziza.upstream";
 
-// One public API address, used by the browser and by this handler alike.
-// Compiled in at build time rather than read at runtime, so it must be
-// supplied as a Docker build arg — `docker run -e` happens too late.
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 const TEXT_PART_ID = "text-0";
-
-// Server-side tracing of the raw backend SSE. Frames the schemas reject are
-// the interesting ones: without this they are dropped in silence.
 const LOG_PREFIX = "[ziza stream]";
-const MAX_LOGGED_PAYLOAD_CHARS = 500;
-
-const truncate = (payload: string) =>
-  payload.length <= MAX_LOGGED_PAYLOAD_CHARS
-    ? payload
-    : `${payload.slice(0, MAX_LOGGED_PAYLOAD_CHARS)}… (+${payload.length - MAX_LOGGED_PAYLOAD_CHARS} chars)`;
 
 /**
- * Protocol translator: the demo API speaks its own SSE dialect, `useChat`
- * speaks UI message streams. This route is the only place that knows both.
+ * Protocol translator: ziza speaks its own SSE dialect, `useChat` speaks UI
+ * message streams. This route is the only place that knows both.
  *
- * `{"chunk": "..."}` becomes a text delta; every other frame is forwarded as a
- * transient `data-ziza` part.
+ * `text` becomes a text delta and `citations` a `data-citations` part that
+ * stays on the message. Every other event is forwarded as a transient
+ * `data-ziza` part, with the event name folded in as `type`.
  */
-export async function POST(incomingRequest: Request) {
-  const body = await incomingRequest.json().catch(() => null);
-  const parsedBody = ZizaChatRequestSchema.safeParse(body);
-
+export async function POST(incomingRequest: NextRequest) {
+  const parsedBody = ZizaChatRequestSchema.safeParse(
+    await incomingRequest.json().catch(() => null),
+  );
   if (!parsedBody.success) {
-    return NextResponse.json(
-      { message: "Invalid request", issues: parsedBody.error.issues },
-      { status: 400 },
-    );
+    return bffErrorResponse(400, "invalid_request", "Invalid request");
   }
 
-  let upstream: Response;
-  try {
-    upstream = await fetch(`${API_BASE_URL}/api/ziza/chat/stream`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "text/event-stream",
-      },
-      body: JSON.stringify(parsedBody.data),
-      signal: incomingRequest.signal,
-    });
-  } catch (failure) {
-    const reason = API_BASE_URL
-      ? `Could not reach the demo API at ${API_BASE_URL}`
-      : "NEXT_PUBLIC_API_BASE_URL was empty at build time, so there is no API address to call";
-    console.error("ziza stream upstream failed:", reason, failure);
-    return NextResponse.json({ message: reason }, { status: 503 });
+  const context = resolveZizaRequestContext(incomingRequest);
+  if (context instanceof NextResponse) {
+    return context;
   }
 
+  const requestBody = JSON.stringify({ message: parsedBody.data.message });
+  const outcome = await callZizaWithSession(
+    incomingRequest,
+    context.config,
+    context.visitorAddress,
+    {
+      label: "POST chat/stream",
+      appRelativePath: "chat/stream",
+      buildRequestInit: (zizaHeaders) => ({
+        method: "POST",
+        headers: {
+          ...zizaHeaders,
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        },
+        body: requestBody,
+        signal: incomingRequest.signal,
+      }),
+    },
+  );
+  if ("failureResponse" in outcome) {
+    return outcome.failureResponse;
+  }
+
+  const { upstream } = outcome;
   if (!upstream.ok || !upstream.body) {
-    return NextResponse.json(
-      { message: "The demo API rejected the stream request" },
-      { status: upstream.status === 200 ? 502 : upstream.status },
-    );
+    return upstream.ok
+      ? bffErrorResponse(502, "upstream_unreadable", "ziza sent no stream.")
+      : passThroughUpstreamError(upstream);
   }
 
   const upstreamBody = upstream.body;
+  const upstreamRequestId = upstream.headers.get(REQUEST_ID_HEADER) ?? "none";
 
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
@@ -77,94 +82,60 @@ export async function POST(incomingRequest: Request) {
         transient: true,
       });
 
-      const reader = upstreamBody.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
       let hasOpenTextPart = false;
-      let frameCount = 0;
+      let eventCount = 0;
 
-      const writeTextDelta = (delta: string) => {
-        if (!hasOpenTextPart) {
-          writer.write({ type: "text-start", id: TEXT_PART_ID });
-          hasOpenTextPart = true;
-        }
-        writer.write({ type: "text-delta", delta, id: TEXT_PART_ID });
-      };
-
-      const handleFrame = (payload: string, eventName?: string) => {
-        frameCount += 1;
-        const origin = `${LOG_PREFIX} frame ${frameCount}${eventName ? ` event=${eventName}` : ""}`;
-
-        let frame: unknown;
+      for await (const serverSentEvent of readServerSentEvents(upstreamBody)) {
+        eventCount += 1;
+        let payload: unknown;
         try {
-          frame = JSON.parse(payload);
+          payload = JSON.parse(serverSentEvent.data);
         } catch {
-          console.warn(`${origin} unparseable:`, truncate(payload));
-          return; // skip malformed frames rather than killing the stream
+          console.warn(
+            `${LOG_PREFIX} event ${eventCount} (${serverSentEvent.event}) is not JSON; dropped`,
+          );
+          continue;
         }
 
-        const textFrame = ZizaTextFrameSchema.safeParse(frame);
-        if (textFrame.success) {
-          console.log(`${origin} text:`, truncate(textFrame.data.chunk));
-          writeTextDelta(textFrame.data.chunk);
-          return;
+        const chatEvent = parseZizaChatEvent(serverSentEvent.event, payload);
+        if (!chatEvent) {
+          console.warn(
+            `${LOG_PREFIX} event ${eventCount} (${serverSentEvent.event}) matched no schema; dropped`,
+          );
+          continue;
         }
 
-        const agentEvent = ZizaAgentEventSchema.safeParse(frame);
-        if (agentEvent.success) {
-          console.log(`${origin} agent event:`, truncate(payload));
+        if (chatEvent.type === "text") {
+          if (!hasOpenTextPart) {
+            writer.write({ type: "text-start", id: TEXT_PART_ID });
+            hasOpenTextPart = true;
+          }
           writer.write({
-            type: "data-ziza",
-            data: agentEvent.data,
-            transient: true,
+            type: "text-delta",
+            delta: chatEvent.text,
+            id: TEXT_PART_ID,
           });
-          return;
+          continue;
         }
 
-        console.warn(
-          `${origin} no schema matched — dropped, nothing reaches the client:`,
-          truncate(payload),
-        );
-      };
-
-      let pendingEventName: string | undefined;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
-          break;
+        if (chatEvent.type === "citations") {
+          writer.write({
+            type: "data-citations",
+            data: chatEvent.citations.map(toCitation),
+          });
+          continue;
         }
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-
-          if (trimmed.startsWith("event:")) {
-            pendingEventName = trimmed.slice(6).trim();
-            continue;
-          }
-
-          const payload = trimmed.startsWith("data:")
-            ? trimmed.slice(5).trim()
-            : trimmed;
-
-          if (!payload || payload === "[DONE]") {
-            continue;
-          }
-
-          handleFrame(payload, pendingEventName);
-          pendingEventName = undefined;
-        }
+        writer.write({ type: "data-ziza", data: chatEvent, transient: true });
       }
 
       if (hasOpenTextPart) {
         writer.write({ type: "text-end", id: TEXT_PART_ID });
       }
 
-      console.log(`${LOG_PREFIX} closed after ${frameCount} frame(s)`);
+      console.log(
+        `${LOG_PREFIX} closed after ${eventCount} event(s) (request id ${upstreamRequestId})`,
+      );
 
       writer.write({
         type: "data-ziza",
@@ -175,11 +146,18 @@ export async function POST(incomingRequest: Request) {
     onError: () => "The chat stream failed.",
   });
 
-  return createUIMessageStreamResponse({
+  const response = createUIMessageStreamResponse({
     stream,
     headers: {
       "Cache-Control": "no-cache, no-transform",
       "X-Accel-Buffering": "no",
     },
   });
+
+  // `createUIMessageStreamResponse` returns a plain Response; wrapping it
+  // gives access to `NextResponse.cookies` without copying the stream.
+  return applySessionOutcome(
+    new NextResponse(response.body, response),
+    outcome,
+  );
 }
