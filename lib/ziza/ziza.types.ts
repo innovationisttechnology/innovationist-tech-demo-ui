@@ -1,103 +1,117 @@
 // camelCase domain model the UI works with (mapped from the zod schemas).
 
-export type KnowledgeIngestResult = {
-  sessionId: string;
-  source: string;
-  chunksIngested: number;
-  searchable: boolean;
-  imagesDescribed: number;
-  imagesFailed: number;
-  documentsUsed: number;
-  documentsAllowed: number;
-  pagesSummarised: number;
-  suggestions: readonly Suggestion[];
+// Every failed ziza call. `code` is ziza's `details.code` (or the BFF's own,
+// in the same shape); copy is chosen on it, not on the status.
+export type ZizaFailure = {
+  // Named so it cannot be confused with the `status` some results carry.
+  httpStatus: number;
+  code?: string;
+  message?: string;
+  retryAfterSeconds?: number;
 };
 
-// 413 too large, 415 unextractable, 422 unsafe URL, 502 unreachable — all
-// different things to tell someone, hence the status rather than null.
-export type KnowledgeIngestFailure = {
-  status: number;
-  detail?: string;
+export type Citation = {
+  number: number;
+  sourceId?: string;
+  sourceRef?: string;
+  locator?: string;
+  // Only history knows this: the source was removed after it was cited.
+  isRemoved: boolean;
 };
 
-export type DeferredKind = "approval" | "call";
+export type UnfinishedAction = {
+  description: string;
+  reason: string;
+};
 
 export type OfferedLink = {
   url: string;
-  text: string;
+  title?: string;
 };
 
-type PendingCallBase = {
-  toolCallId: string;
-  toolName: string;
-  summary?: string;
-};
-
-export type PendingApprovalCall = PendingCallBase & {
+export type PendingApproval = {
   kind: "approval";
-  documents: readonly string[];
+  // ziza's `action_id`.
+  id: string;
+  toolName: string;
+  description?: string;
   // Reserved for things that destroy or send: an ordinary confirmation in red
   // trains people to click through red.
   isDestructive: boolean;
 };
 
-export type PendingInputCall = PendingCallBase & {
-  kind: "call";
-  pageUrl?: string;
+export type PendingLinkOffer = {
+  kind: "link_offer";
+  // ziza's `offer_id`.
+  id: string;
+  pageUrl: string;
   pageTitle?: string;
+  // Excludes the page itself, which is always indexed when the offer is taken.
   links: readonly OfferedLink[];
-  slotsLeft?: number;
 };
 
-export type PendingCall = PendingApprovalCall | PendingInputCall;
+export type PendingCall = PendingApproval | PendingLinkOffer;
 
-export type DeferralResult = {
-  response: string;
-  pendingCalls: readonly PendingCall[];
+export type ApprovalDecision = "approve" | "decline";
+
+export type ResumedTurn = {
+  text: string;
+  citations: readonly Citation[];
+  approvalRequired: PendingApproval | null;
+  followUps: readonly string[];
+  failure: { code?: string; message?: string } | null;
 };
 
-// 409 means the decision was already spent or the run aged out; 422 means a
-// link this call never offered.
-export type DeferralFailure = {
-  status: number;
-  detail?: string;
+export type LinkOfferOutcome = {
+  added: readonly { url: string; jobId: string }[];
+  refused: readonly { url: string; code?: string; message?: string }[];
 };
 
-// "url" stays even though there is no URL input: accepting a crawled-link
-// offer in chat still produces url-kind rows.
+// "url" stays even though there is no URL input: accepting a link offer in
+// chat still produces url-kind rows.
 export type SourceKind = "file" | "url";
 
 export type KnowledgeSourceStatus =
-  "uploading" | "processing" | "indexed" | "pending-index" | "failed";
+  "uploading" | "processing" | "indexed" | "failed";
 
 export type KnowledgeSource = {
-  // Client-side id — the API has no per-source identifier yet.
+  // Stable row id for rendering; never sent to ziza.
   id: string;
+  // ziza's id, known once the ingest job is done; needed to remove the row.
+  sourceId?: string;
+  // The ingest job this row is following, until it finishes.
+  jobId?: string;
   label: string;
   kind: SourceKind;
   chunkCount: number;
   status: KnowledgeSourceStatus;
   startedAt?: number;
+  progressLabel?: string;
   imagesDescribed?: number;
   imagesFailed?: number;
   imagesSkipped?: number;
-  pagesSummarised?: number;
   errorDetail?: string;
 };
 
-export type Suggestion = {
-  kind: string;
-  label: string;
-  message: string;
-  url?: string | null;
-  category?: string | null;
-};
+export type SessionJobStatus = "queued" | "processing" | "done" | "failed";
 
-// `document` names which upload the questions belong to, which is how a
-// failed-looking upload can be told apart from one that actually landed.
-export type StarterQuestions = {
-  document: string | null;
-  suggestions: readonly Suggestion[];
+export type SessionJob = {
+  id: string;
+  status: SessionJobStatus;
+  progressLabel?: string;
+  // Set on a finished ingest job when ziza queued starters for its document.
+  startersJobId?: string;
+  // Set on a finished starters job: the questions written for its upload.
+  starterQuestions?: readonly string[];
+  // Only an ingest job has one.
+  result?: {
+    sourceId: string;
+    chunks: number;
+    imagesDescribed: number;
+    imagesSkipped: number;
+    imagesFailed: number;
+  };
+  errorMessage?: string;
 };
 
 // Mirrors `ChatTurn` in `chat-panel.tsx`, redeclared here so the API layer
@@ -106,19 +120,15 @@ export type ChatHistoryTurn = {
   id: string;
   role: "user" | "assistant";
   text: string;
+  citations: readonly Citation[];
+  unfinishedAction?: UnfinishedAction;
 };
 
 export type ChatHistoryPage = {
   turns: readonly ChatHistoryTurn[];
-  hasMore: boolean;
-  // Pass back as `before` for the next page older than this one.
+  // Pass back as `before` for the next page older than this one; null at the
+  // start of the conversation.
   nextBefore: string | null;
-};
-
-export type SessionSources = {
-  documentsUsed: number;
-  documentsAllowed: number;
-  sources: readonly KnowledgeSource[];
 };
 
 export type InspectorEntryLevel = "open" | "info" | "tool" | "error" | "done";
@@ -131,9 +141,10 @@ export type InspectorEntry = {
   detail?: string;
 };
 
-export type RetrievedChunk = {
+export type RetrievedPassage = {
   id: number;
-  source: string;
-  score: number;
-  text: string;
+  number: number;
+  title?: string;
+  locator?: string;
+  excerpt?: string;
 };

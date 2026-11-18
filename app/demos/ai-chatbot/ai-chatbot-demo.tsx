@@ -20,63 +20,103 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { getSessionId } from "@/lib/content-sync/session";
 import { useMediaQuery } from "@/lib/use-media-query";
-import { toPendingCall } from "@/lib/ziza/ziza.mapper";
+import { toPendingApproval, toPendingLinkOffer } from "@/lib/ziza/ziza.mapper";
 import {
-  ZizaApprovalRequiredEventSchema,
-  ZizaInputRequiredEventSchema,
-  ZizaSuggestionsEventSchema,
+  CitationPartSchema,
+  UnfinishedActionPartSchema,
+  parseZizaChatEvent,
 } from "@/lib/ziza/ziza.schema";
 import {
+  DEMO_MAX_DOCUMENTS_PER_SESSION,
   ZIZA_STREAM_ROUTE,
-  clearKnowledge,
+  clearZizaSession,
+  ensureZizaSession,
   fetchChatHistory,
   fetchSessionSources,
   fetchStarterQuestions,
+  fetchWithSessionRenewalCheck,
+  followSessionJob,
   ingestFile,
-  isDeferralFailure,
-  isIngestFailure,
+  isZizaFailure,
+  readChatStreamFailure,
+  readUploadStartersOnceJobFinishes,
+  removeSource,
   resolveApproval,
-  resolveLinkSelection,
+  resolveLinkOffer,
+  subscribeToSessionRenewal,
 } from "@/lib/ziza/ziza.service";
 import {
+  type ApprovalDecision,
   type ChatHistoryTurn,
+  type Citation,
+  type SessionJob,
   type InspectorEntry,
-  type DeferralResult,
   type KnowledgeSource,
   type PendingCall,
-  type RetrievedChunk,
-  type Suggestion,
+  type RetrievedPassage,
+  type ZizaFailure,
 } from "@/lib/ziza/ziza.types";
-import { ChatPanel, type ChatTurn } from "./chat-panel";
+import {
+  ChatPanel,
+  type ChatTurn,
+  type StarterQuestionsOrigin,
+} from "./chat-panel";
 import { InspectorPanel } from "./inspector-panel";
 import { SourcesPanel } from "./sources-panel";
 
 const MAX_INSPECTOR_ENTRIES = 200;
+
+type StarterOffer = {
+  questions: readonly string[];
+  origin: StarterQuestionsOrigin;
+};
+
+const NO_STARTERS: StarterOffer = { questions: [], origin: "recovered" };
 const ELAPSED_TICK_MS = 1000;
 
-// Status codes come straight from `app/ziza_chat/router.py`.
-const UPLOAD_FAILURE_MESSAGE: Record<number, string> = {
-  413: "Too big. The cap is 25MB.",
-  415: "We can't read that kind of file.",
-  422: "That file arrived empty.",
-  503: "The knowledge base is offline right now.",
+const CITATIONS_PART_TYPE = "data-citations";
+const UNFINISHED_ACTION_PART_TYPE = "data-unfinished-action";
+const ZIZA_EVENT_PART_TYPE = "data-ziza";
+
+// Keyed on ziza's `details.code`. A code missing here falls back to the
+// message ziza sent with it.
+const FAILURE_MESSAGE_BY_CODE: Record<string, string> = {
+  invalid_server_secret: "The demo is misconfigured. Try again later.",
+  product_needs_attention: "The demo is misconfigured. Try again later.",
+  bff_not_configured: "The demo is misconfigured. Try again later.",
+  missing_client_ip: "The demo is misconfigured. Try again later.",
+  product_disabled: "The demo is turned off right now.",
+  upstream_unreachable: "The knowledge base is offline right now.",
+  model_unavailable: "The model is unavailable. Try again shortly.",
+  turn_in_progress: "Let the current answer finish first.",
+  message_too_long: "That message is too long.",
+  duplicate_source: "That document is already in this session.",
+  session_document_limit: `This session already holds ${DEMO_MAX_DOCUMENTS_PER_SESSION} documents. Remove one first.`,
+  upload_too_large: "Too big. The cap is 25MB.",
+  unsupported_document: "We can't read that kind of file.",
+  approval_expired:
+    "That's no longer waiting on you. Ask again if you still want it.",
+  approval_already_decided: "That was already answered.",
 };
 
-const DEFERRAL_FAILURE_MESSAGE: Record<number, string> = {
-  409: "That's no longer waiting on you. Ask again if you still want it.",
-  422: "Some of those links weren't part of this offer.",
-  503: "This isn't available in the current session.",
-};
-
-function failureMessage(
-  messages: Record<number, string>,
-  status: number,
-  detail?: string,
-): string {
-  return detail ?? messages[status] ?? `Failed (${status}).`;
+function describeFailure(failure: ZizaFailure): string {
+  if (failure.code === "rate_limited" || failure.code === "spend_cap_reached") {
+    const wait = failure.retryAfterSeconds
+      ? ` Try again in ${Math.ceil(failure.retryAfterSeconds)}s.`
+      : "";
+    return `${failure.message ?? "Too many requests."}${wait}`;
+  }
+  return (
+    (failure.code ? FAILURE_MESSAGE_BY_CODE[failure.code] : undefined) ??
+    failure.message ??
+    `Failed (${failure.httpStatus}).`
+  );
 }
+
+// A failure that means the card can never be answered, so it should go.
+const isSpentDecision = (failure: ZizaFailure) =>
+  failure.httpStatus === 404 || failure.httpStatus === 409;
 
 function formatTime(): string {
   return new Date().toLocaleTimeString("en-US", { hour12: false });
@@ -85,8 +125,48 @@ function formatTime(): string {
 const toUIMessage = (turn: ChatHistoryTurn): UIMessage => ({
   id: turn.id,
   role: turn.role,
-  parts: [{ type: "text", text: turn.text }],
+  parts: [
+    { type: "text", text: turn.text },
+    ...(turn.citations.length > 0
+      ? [{ type: CITATIONS_PART_TYPE, data: turn.citations } as const]
+      : []),
+    ...(turn.unfinishedAction
+      ? [
+          {
+            type: UNFINISHED_ACTION_PART_TYPE,
+            data: turn.unfinishedAction,
+          } as const,
+        ]
+      : []),
+  ],
 });
+
+function readMessageCitations(message: UIMessage): readonly Citation[] {
+  const citationsPart = message.parts.findLast(
+    (part) => part.type === CITATIONS_PART_TYPE,
+  );
+  if (!citationsPart || !("data" in citationsPart)) {
+    return [];
+  }
+  const parsed = CitationPartSchema.safeParse(citationsPart.data);
+  return parsed.success ? parsed.data : [];
+}
+
+function readMessageUnfinishedAction(message: UIMessage) {
+  const actionPart = message.parts.find(
+    (part) => part.type === UNFINISHED_ACTION_PART_TYPE,
+  );
+  if (!actionPart || !("data" in actionPart)) {
+    return undefined;
+  }
+  const parsed = UnfinishedActionPartSchema.safeParse(actionPart.data);
+  return parsed.success ? parsed.data : undefined;
+}
+
+const citedSourceIds = (citations: readonly Citation[]): string[] =>
+  citations.flatMap((citation) =>
+    citation.sourceId ? [citation.sourceId] : [],
+  );
 
 // Shape is only known at runtime, so narrow rather than trusting a cast.
 function readEventType(payload: unknown): string | undefined {
@@ -97,44 +177,77 @@ function readEventType(payload: unknown): string | undefined {
   return typeof candidate === "string" ? candidate : undefined;
 }
 
+const isBusySource = (source: KnowledgeSource) =>
+  source.status === "uploading" || source.status === "processing";
+
+// A re-read is authoritative for what ziza has finished, but knows nothing of
+// rows this page is still uploading or that failed locally. A pending server
+// row is most likely one of the local busy rows, so it is left out while any
+// are in flight rather than shown twice.
+function mergeRestoredSources(
+  current: readonly KnowledgeSource[],
+  restored: readonly KnowledgeSource[],
+): readonly KnowledgeSource[] {
+  const localOnlyRows = current.filter((source) => !source.sourceId);
+  const hasLocalBusyRows = localOnlyRows.some(isBusySource);
+  return [
+    ...restored.filter(
+      (source) => !(hasLocalBusyRows && source.status === "processing"),
+    ),
+    ...localOnlyRows,
+  ];
+}
+
+type StreamFailure = {
+  message: string;
+  retryAfterSeconds?: number;
+};
+
 export function AiChatbotDemo() {
-  const [sessionId, setSessionId] = useState("");
+  const [isSessionReady, setIsSessionReady] = useState(false);
+  const [sessionFailureMessage, setSessionFailureMessage] = useState<
+    string | undefined
+  >(undefined);
   const [sources, setSources] = useState<readonly KnowledgeSource[]>([]);
   const [entries, setEntries] = useState<readonly InspectorEntry[]>([]);
-  const [chunks, setChunks] = useState<readonly RetrievedChunk[]>([]);
-  const [activeSourceLabels, setActiveSourceLabels] = useState<
-    readonly string[]
-  >([]);
+  const [passages, setPassages] = useState<readonly RetrievedPassage[]>([]);
+  const [activeSourceIds, setActiveSourceIds] = useState<readonly string[]>([]);
   const [pendingCalls, setPendingCalls] = useState<readonly PendingCall[]>([]);
   const [resolvingCallId, setResolvingCallId] = useState<string | null>(null);
-  const [suggestions, setSuggestions] = useState<readonly Suggestion[]>([]);
+  const [suggestions, setSuggestions] = useState<readonly string[]>([]);
   // `useChat`'s own `error` never fires for a mid-stream failure: the response
-  // is a clean 200 that ends normally, so the frame is the only signal there is.
-  const [streamFailed, setStreamFailed] = useState(false);
-  // Its own slot, not a `kind` filter on the array above: an upload can finish
-  // while an unclicked turn-level chip is showing, and sharing would wipe it.
-  const [starterQuestions, setStarterQuestions] = useState<
-    readonly Suggestion[]
-  >([]);
-  const [capacity, setCapacity] = useState<{
-    used: number;
-    allowed: number;
-  } | null>(null);
+  // is a clean 200 that ends normally, so the event is the only signal.
+  const [streamFailure, setStreamFailure] = useState<StreamFailure | null>(
+    null,
+  );
+  const [isRetryHeldBack, setIsRetryHeldBack] = useState(false);
+  // Failures of the actions around the chat (cards, clear), which have no
+  // other place to be read.
+  const [actionFailureMessage, setActionFailureMessage] = useState<
+    string | undefined
+  >(undefined);
+  // Its own slot, not shared with the follow-ups: an upload can finish while
+  // an unclicked follow-up is showing, and sharing would wipe it.
+  const [starterOffer, setStarterOffer] = useState<StarterOffer>(NO_STARTERS);
+  // A ref so the mount's starters decision sees a message the visitor sent
+  // while history and starters were still loading.
+  const hasConversationTurns = useRef(false);
   const nextEntryId = useRef(0);
-  const nextChunkId = useRef(0);
+  const nextPassageId = useRef(0);
   // Refs, not state: the cursor is never rendered, and a scroll handler firing
   // between renders must see the current value.
   const nextHistoryBefore = useRef<string | null>(null);
-  const hasMoreHistory = useRef(false);
   const isLoadingOlderTurns = useRef(false);
+  // One per job being followed (a row's ingest job by row id, its starters
+  // job by `<row id>:starters`), so clearing the session or unmounting can
+  // stop them all.
+  const jobFollowerStops = useRef(new Map<string, () => void>());
   const isDesktop = useMediaQuery("(min-width: 1024px)");
 
   // Only ticks while an upload is in flight: a long extraction with a frozen
   // row reads as hung, but an idle panel shouldn't repaint forever.
   const [elapsedTick, setElapsedTick] = useState(() => Date.now());
-  const hasBusySource = sources.some(
-    (source) => source.status === "uploading" || source.status === "processing",
-  );
+  const hasBusySource = sources.some(isBusySource);
 
   useEffect(() => {
     if (!hasBusySource) {
@@ -146,6 +259,17 @@ export function AiChatbotDemo() {
     );
     return () => clearInterval(interval);
   }, [hasBusySource]);
+
+  useEffect(() => {
+    if (!isRetryHeldBack || !streamFailure?.retryAfterSeconds) {
+      return;
+    }
+    const release = setTimeout(
+      () => setIsRetryHeldBack(false),
+      streamFailure.retryAfterSeconds * 1000,
+    );
+    return () => clearTimeout(release);
+  }, [isRetryHeldBack, streamFailure]);
 
   const pushEntry = useCallback(
     (level: InspectorEntry["level"], label: string, detail?: string) => {
@@ -165,10 +289,139 @@ export function AiChatbotDemo() {
     [],
   );
 
+  const updateSource = useCallback(
+    (rowId: string, changes: Partial<KnowledgeSource>) => {
+      setSources((current) =>
+        current.map((source) =>
+          source.id === rowId ? { ...source, ...changes } : source,
+        ),
+      );
+    },
+    [],
+  );
+
+  const stopFollowingAllJobs = useCallback(() => {
+    jobFollowerStops.current.forEach((stop) => stop());
+    jobFollowerStops.current.clear();
+  }, []);
+
+  useEffect(() => stopFollowingAllJobs, [stopFollowingAllJobs]);
+
+  const refreshStartersWhenJobFinishes = useCallback(
+    (rowId: string, startersJobId: string) => {
+      const followerKey = `${rowId}:starters`;
+      const stop = readUploadStartersOnceJobFinishes(
+        startersJobId,
+        (starters) => {
+          jobFollowerStops.current.delete(followerKey);
+          setStarterOffer({ questions: starters, origin: "upload" });
+          pushEntry("info", "starter_questions.offered", starters.join(" · "));
+        },
+      );
+      jobFollowerStops.current.set(followerKey, stop);
+    },
+    [pushEntry],
+  );
+
+  const applyJobToRow = useCallback(
+    (rowId: string, label: string, job: SessionJob) => {
+      if (job.status === "queued" || job.status === "processing") {
+        updateSource(rowId, {
+          status: "processing",
+          progressLabel: job.progressLabel,
+        });
+        return;
+      }
+
+      jobFollowerStops.current.delete(rowId);
+
+      if (job.status === "failed" || !job.result) {
+        const message = job.errorMessage ?? "Indexing failed.";
+        updateSource(rowId, {
+          status: "failed",
+          jobId: undefined,
+          startedAt: undefined,
+          progressLabel: undefined,
+          errorDetail: message,
+        });
+        pushEntry("error", "knowledge.failed", `${label}: ${message}`);
+        return;
+      }
+
+      const { result } = job;
+      updateSource(rowId, {
+        sourceId: result.sourceId,
+        jobId: undefined,
+        status: "indexed",
+        chunkCount: result.chunks,
+        startedAt: undefined,
+        progressLabel: undefined,
+        imagesDescribed: result.imagesDescribed,
+        imagesSkipped: result.imagesSkipped,
+        imagesFailed: result.imagesFailed,
+      });
+      pushEntry(
+        result.imagesFailed > 0 ? "error" : "info",
+        "knowledge.indexed",
+        `${label} · ${result.chunks} chunks · ${result.imagesDescribed} images`,
+      );
+      if (job.startersJobId) {
+        refreshStartersWhenJobFinishes(rowId, job.startersJobId);
+      }
+    },
+    [pushEntry, refreshStartersWhenJobFinishes, updateSource],
+  );
+
+  const followJobForRow = useCallback(
+    (rowId: string, label: string, jobId: string) => {
+      const stop = followSessionJob(
+        jobId,
+        (job) => applyJobToRow(rowId, label, job),
+        (failure) => {
+          jobFollowerStops.current.delete(rowId);
+          const message = describeFailure(failure);
+          updateSource(rowId, {
+            status: "failed",
+            jobId: undefined,
+            startedAt: undefined,
+            errorDetail: message,
+          });
+          pushEntry("error", "knowledge.lost", `${label}: ${message}`);
+        },
+      );
+      jobFollowerStops.current.set(rowId, stop);
+    },
+    [applyJobToRow, pushEntry, updateSource],
+  );
+
+  // The BFF replaced a session ziza no longer knew, so everything this page
+  // shows from the old one is gone server-side. Uploads still in flight land
+  // in the new session, so their rows stay.
+  useEffect(
+    () =>
+      subscribeToSessionRenewal(() => {
+        stopFollowingAllJobs();
+        setSources((current) =>
+          current.filter((source) => source.status === "uploading"),
+        );
+        setPendingCalls([]);
+        setStarterOffer(NO_STARTERS);
+        setActiveSourceIds([]);
+        nextHistoryBefore.current = null;
+        pushEntry(
+          "info",
+          "session.renewed",
+          "The previous session had ended; its documents are gone.",
+        );
+      }),
+    [pushEntry, stopFollowingAllJobs],
+  );
+
   const transport = useMemo(
     () =>
       new DefaultChatTransport({
         api: ZIZA_STREAM_ROUTE,
+        fetch: fetchWithSessionRenewalCheck,
         prepareSendMessagesRequest: ({ messages }) => {
           const lastMessage = messages.at(-1);
           const message =
@@ -176,133 +429,159 @@ export function AiChatbotDemo() {
               .filter(isTextUIPart)
               .map((part) => part.text)
               .join("") ?? "";
-          return { body: { message, session_id: sessionId } };
+          return { body: { message } };
         },
       }),
-    [sessionId],
+    [],
   );
 
   const handleData = useCallback(
     (dataPart: { type: string; data?: unknown }) => {
-      const payload = dataPart.data;
-      const eventType = readEventType(payload);
-
-      switch (eventType) {
-        case "stream_open":
-          pushEntry("open", "stream.open", ZIZA_STREAM_ROUTE);
-          break;
-        case "stream_close":
-          pushEntry("done", "stream.close");
-          break;
-        case "intent": {
-          const intentEvent = payload as {
-            intents: string[];
-            needs_rag: boolean;
-            rag_query?: string | null;
-          };
+      if (dataPart.type === CITATIONS_PART_TYPE) {
+        const parsed = CitationPartSchema.safeParse(dataPart.data);
+        if (parsed.success) {
+          setActiveSourceIds(citedSourceIds(parsed.data));
           pushEntry(
             "info",
-            "intent",
-            `${intentEvent.intents.join(", ")} · needs_rag: ${intentEvent.needs_rag}${
-              intentEvent.rag_query
-                ? ` · query: "${intentEvent.rag_query}"`
-                : ""
-            }`,
+            "citations",
+            parsed.data
+              .map(
+                (citation) =>
+                  `[${citation.number}] ${citation.sourceRef ?? "?"}`,
+              )
+              .join(" · "),
           );
-          break;
         }
-        case "tool_call": {
-          const toolEvent = payload as { tool: string; args?: unknown };
-          pushEntry(
-            "tool",
-            `tool: ${toolEvent.tool}`,
-            toolEvent.args ? JSON.stringify(toolEvent.args) : undefined,
-          );
+        return;
+      }
+      if (dataPart.type !== ZIZA_EVENT_PART_TYPE) {
+        return;
+      }
+
+      const payload = dataPart.data;
+      const eventType = readEventType(payload);
+      if (eventType === "stream_open") {
+        pushEntry("open", "stream.open", ZIZA_STREAM_ROUTE);
+        return;
+      }
+      if (eventType === "stream_close") {
+        pushEntry("done", "stream.close");
+        return;
+      }
+
+      const chatEvent = eventType
+        ? parseZizaChatEvent(eventType, payload)
+        : null;
+      if (!chatEvent) {
+        pushEntry(
+          "error",
+          "event.malformed",
+          `A ${eventType ?? "nameless"} event arrived that the UI could not read.`,
+        );
+        return;
+      }
+
+      switch (chatEvent.type) {
+        case "searching":
+          pushEntry("info", "searching");
           break;
-        }
-        case "chunk_retrieved": {
-          const chunkEvent = payload as {
-            source: string;
-            score: number;
-            text: string;
-          };
-          setChunks((current) => [
-            ...current,
-            { id: nextChunkId.current++, ...chunkEvent },
-          ]);
-          setActiveSourceLabels((current) =>
-            current.includes(chunkEvent.source)
-              ? current
-              : [...current, chunkEvent.source],
-          );
-          pushEntry(
-            "tool",
-            "chunk.retrieved",
-            `${chunkEvent.source} · ${chunkEvent.score.toFixed(2)}`,
-          );
-          break;
-        }
-        case "chat.approval_required":
-        case "chat.input_required": {
-          const schema =
-            eventType === "chat.approval_required"
-              ? ZizaApprovalRequiredEventSchema
-              : ZizaInputRequiredEventSchema;
-          const deferralEvent = schema.safeParse(payload);
-          if (!deferralEvent.success) {
+        case "working":
+          if (chatEvent.kind === "passages" && chatEvent.passages) {
+            const found = chatEvent.passages;
+            setPassages((current) => [
+              ...current,
+              ...found.map((passage) => ({
+                id: nextPassageId.current++,
+                number: passage.number,
+                title: passage.title ?? undefined,
+                locator: passage.locator ?? undefined,
+                excerpt: passage.excerpt ?? undefined,
+              })),
+            ]);
+            pushEntry("tool", "passages", `${found.length} found`);
+          } else if (chatEvent.kind === "query") {
+            pushEntry("tool", "query", chatEvent.query ?? undefined);
+          } else if (chatEvent.kind === "tool") {
             pushEntry(
-              "error",
-              "deferral.malformed",
-              `A ${eventType} frame arrived that the UI could not read.`,
+              "tool",
+              `tool: ${chatEvent.tool ?? "unknown"}`,
+              chatEvent.status ?? undefined,
             );
-            break;
+          } else {
+            pushEntry("tool", `working: ${chatEvent.kind}`);
           }
-          const call = toPendingCall(deferralEvent.data.pending_call);
-          // A resolution can re-announce what is still outstanding, so
-          // replace by id rather than append.
+          break;
+        case "approval_required": {
+          const approval = toPendingApproval(chatEvent);
           setPendingCalls((current) => [
-            ...current.filter(
-              (existing) => existing.toolCallId !== call.toolCallId,
-            ),
-            call,
+            ...current.filter((existing) => existing.id !== approval.id),
+            approval,
           ]);
           pushEntry(
             "tool",
-            eventType === "chat.approval_required"
-              ? "approval.required"
-              : "input.required",
-            `${call.toolName} · ${call.toolCallId}`,
+            "approval.required",
+            `${approval.toolName} · ${approval.id}`,
           );
           break;
         }
-        case "chat.suggestions": {
-          const suggestionsEvent =
-            ZizaSuggestionsEventSchema.safeParse(payload);
-          if (!suggestionsEvent.success) {
+        case "links_offered": {
+          const offer = toPendingLinkOffer(chatEvent);
+          setPendingCalls((current) => [
+            ...current.filter((existing) => existing.id !== offer.id),
+            offer,
+          ]);
+          pushEntry(
+            "tool",
+            "links.offered",
+            `${offer.pageUrl} + ${offer.links.length} link(s)`,
+          );
+          break;
+        }
+        case "done":
+          pushEntry(
+            "done",
+            "turn.done",
+            `answered: ${chatEvent.answered ?? "?"} · small_talk: ${chatEvent.small_talk ?? "?"}`,
+          );
+          if (chatEvent.refusal) {
             pushEntry(
-              "error",
-              "suggestions.malformed",
-              "A chat.suggestions frame arrived that the UI could not read.",
+              "info",
+              `refusal: ${chatEvent.refusal.kind}`,
+              chatEvent.refusal.redirect ?? undefined,
             );
-            break;
           }
-          setSuggestions(suggestionsEvent.data.suggestions);
+          break;
+        case "suggestions":
+          setSuggestions(chatEvent.follow_ups);
           pushEntry(
             "info",
             "suggestions.offered",
-            suggestionsEvent.data.suggestions
-              .map((suggestion) => suggestion.label)
-              .join(", "),
+            chatEvent.follow_ups.join(" · "),
           );
           break;
-        }
-        case "chat.error":
-          pushEntry("error", "stream.error", "The answer was cut short.");
-          setStreamFailed(true);
+        case "limit": {
+          const message = describeFailure({
+            httpStatus: 429,
+            code: chatEvent.code,
+            message: chatEvent.message ?? undefined,
+            retryAfterSeconds: chatEvent.retry_after_seconds ?? undefined,
+          });
+          setStreamFailure({
+            message,
+            retryAfterSeconds: chatEvent.retry_after_seconds ?? undefined,
+          });
+          setIsRetryHeldBack(Boolean(chatEvent.retry_after_seconds));
+          pushEntry("error", `limit: ${chatEvent.code}`, message);
           break;
+        }
         case "error": {
-          const errorEvent = payload as { message: string };
-          pushEntry("error", "stream.error", errorEvent.message);
+          const message = describeFailure({
+            httpStatus: 0,
+            code: chatEvent.code ?? undefined,
+            message: chatEvent.message ?? "The answer was cut short.",
+          });
+          setStreamFailure({ message });
+          pushEntry("error", `stream.error: ${chatEvent.code ?? "?"}`, message);
           break;
         }
         default:
@@ -312,81 +591,98 @@ export function AiChatbotDemo() {
     [pushEntry],
   );
 
-  const { messages, sendMessage, setMessages, status, error } = useChat({
-    transport,
-    onData: handleData,
-  });
+  const { messages, sendMessage, setMessages, status, error, clearError } =
+    useChat({
+      transport,
+      onData: handleData,
+    });
+
+  useEffect(() => {
+    hasConversationTurns.current = messages.length > 0;
+  }, [messages]);
 
   useEffect(() => {
     let isActive = true;
-    getSessionId()
-      .then((id) => {
-        if (isActive && id) {
-          setSessionId(id);
-          pushEntry("info", "session.ready", id);
-          void fetchChatHistory(id).then((page) => {
-            if (!isActive || !page) {
-              return;
-            }
-            hasMoreHistory.current = page.hasMore;
-            nextHistoryBefore.current = page.nextBefore;
-            if (page.turns.length === 0) {
-              return;
-            }
-            const restoredMessages = page.turns.map(toUIMessage);
-            // The visitor can send before this lands, and `useChat` will have
-            // appended it already.
-            setMessages((current) =>
-              current.length > 0 ? current : restoredMessages,
-            );
-            pushEntry(
-              "info",
-              "history.restored",
-              `${page.turns.length} turns · more: ${page.hasMore}`,
-            );
-          });
+    void ensureZizaSession().then((session) => {
+      if (!isActive) {
+        return;
+      }
+      if (isZizaFailure(session)) {
+        const message = describeFailure(session);
+        setSessionFailureMessage(message);
+        pushEntry("error", "session.failed", message);
+        return;
+      }
+      setIsSessionReady(true);
+      pushEntry(
+        "info",
+        "session.ready",
+        session.isNewSession ? "new session" : "resumed",
+      );
+      if (session.isNewSession) {
+        return;
+      }
 
-          void fetchSessionSources(id).then((restored) => {
-            if (!isActive || !restored) {
-              return;
-            }
-            setCapacity({
-              used: restored.documentsUsed,
-              allowed: restored.documentsAllowed,
-            });
-            if (restored.sources.length === 0) {
-              return;
-            }
-            // An upload started before this settled wins: the cold read is
-            // already stale by then.
-            setSources((current) =>
-              current.length > 0 ? current : restored.sources,
-            );
-            pushEntry(
-              "info",
-              "sources.restored",
-              restored.sources.map((source) => source.label).join(", "),
-            );
-          });
-
-          void fetchStarterQuestions(id).then((recovered) => {
-            if (!isActive || !recovered || recovered.suggestions.length === 0) {
-              return;
-            }
-            setStarterQuestions(recovered.suggestions);
-            pushEntry(
-              "info",
-              "starter_questions.recovered",
-              recovered.document ?? undefined,
-            );
-          });
+      const historyLoaded = fetchChatHistory().then((page) => {
+        if (!isActive || !page) {
+          return page;
         }
-      })
-      .catch(() => {
-        if (isActive) {
-          pushEntry("error", "session.failed", "IndexedDB unavailable");
+        nextHistoryBefore.current = page.nextBefore;
+        if (page.turns.length === 0) {
+          return page;
         }
+        const restoredMessages = page.turns.map(toUIMessage);
+        // The visitor can send before this lands, and `useChat` will have
+        // appended it already.
+        setMessages((current) =>
+          current.length > 0 ? current : restoredMessages,
+        );
+        pushEntry(
+          "info",
+          "history.restored",
+          `${page.turns.length} messages · more: ${page.nextBefore !== null}`,
+        );
+        return page;
       });
+
+      void fetchSessionSources().then((restored) => {
+        if (!isActive || !restored || restored.length === 0) {
+          return;
+        }
+        setSources((current) => mergeRestoredSources(current, restored));
+        pushEntry(
+          "info",
+          "sources.restored",
+          restored.map((source) => source.label).join(", "),
+        );
+      });
+
+      // Starters belong to an empty conversation, so they wait for the
+      // history rather than flashing before it lands. An unreadable history
+      // might still hold turns, so it shows none.
+      void Promise.all([historyLoaded, fetchStarterQuestions()]).then(
+        ([page, starters]) => {
+          const isConversationEmpty =
+            page !== null &&
+            page.turns.length === 0 &&
+            !hasConversationTurns.current;
+          if (
+            !isActive ||
+            !isConversationEmpty ||
+            !starters ||
+            starters.length === 0
+          ) {
+            return;
+          }
+          setStarterOffer({ questions: starters, origin: "recovered" });
+          pushEntry(
+            "info",
+            "starter_questions.recovered",
+            starters.join(" · "),
+          );
+        },
+      );
+    });
     return () => {
       isActive = false;
     };
@@ -400,6 +696,8 @@ export function AiChatbotDemo() {
         .filter(isTextUIPart)
         .map((part) => part.text)
         .join(""),
+      citations: readMessageCitations(message),
+      unfinishedAction: readMessageUnfinishedAction(message),
     }));
 
     // In flight but no delta yet: the typing indicator needs a turn to
@@ -412,53 +710,59 @@ export function AiChatbotDemo() {
   }, [messages, status]);
 
   const isStreaming = status === "submitted" || status === "streaming";
-  const isReady = sessionId !== "";
+
+  const documentsHeld = sources.filter(
+    (source) => source.status !== "failed",
+  ).length;
+  const capacity = {
+    used: documentsHeld,
+    allowed: DEMO_MAX_DOCUMENTS_PER_SESSION,
+  };
 
   // The cursor and the in-flight guard live here, so the panel only ever calls
   // this and trusts it to no-op when there is nothing to fetch.
   const loadOlderTurns = useCallback(() => {
-    if (
-      isLoadingOlderTurns.current ||
-      !hasMoreHistory.current ||
-      !nextHistoryBefore.current
-    ) {
+    if (isLoadingOlderTurns.current || !nextHistoryBefore.current) {
       return;
     }
     isLoadingOlderTurns.current = true;
 
-    void fetchChatHistory(sessionId, {
-      before: nextHistoryBefore.current,
-    }).then((page) => {
-      isLoadingOlderTurns.current = false;
-      if (!page) {
-        return;
-      }
-      hasMoreHistory.current = page.hasMore;
-      nextHistoryBefore.current = page.nextBefore;
+    void fetchChatHistory({ before: nextHistoryBefore.current }).then(
+      (page) => {
+        isLoadingOlderTurns.current = false;
+        if (!page) {
+          return;
+        }
+        nextHistoryBefore.current = page.nextBefore;
 
-      setMessages((current) => {
-        const seen = new Set(current.map((message) => message.id));
-        const older = page.turns
-          .filter((turn) => !seen.has(turn.id))
-          .map(toUIMessage);
-        return older.length > 0 ? [...older, ...current] : current;
-      });
-    });
-  }, [sessionId, setMessages]);
+        setMessages((current) => {
+          const seen = new Set(current.map((message) => message.id));
+          const older = page.turns
+            .filter((turn) => !seen.has(turn.id))
+            .map(toUIMessage);
+          return older.length > 0 ? [...older, ...current] : current;
+        });
+      },
+    );
+  }, [setMessages]);
 
   const handleSend = useCallback(
     (message: string) => {
-      setStreamFailed(false);
-      setChunks([]);
-      setActiveSourceLabels([]);
+      setStreamFailure(null);
+      setIsRetryHeldBack(false);
+      setActionFailureMessage(undefined);
+      setPassages([]);
+      setActiveSourceIds([]);
       setSuggestions([]);
-      setStarterQuestions([]);
+      setStarterOffer(NO_STARTERS);
       if (pendingCalls.length > 0) {
+        // A new message cancels a waiting approval on ziza's side; an offer
+        // simply expires.
         setPendingCalls([]);
         pushEntry(
           "info",
-          "deferral.superseded",
-          pendingCalls.map((call) => call.toolCallId).join(", "),
+          "pending.superseded",
+          pendingCalls.map((call) => call.id).join(", "),
         );
       }
       pushEntry("info", "request.send", `${message.length} chars`);
@@ -467,9 +771,9 @@ export function AiChatbotDemo() {
     [pendingCalls, pushEntry, sendMessage],
   );
 
-  // The failed exchange stays in the transcript rather than being rewound: the
-  // apology is the visitor's evidence something went wrong, and re-sending is a
-  // fresh request either way — the server kept nothing from the failed turn.
+  // The failed exchange stays in the transcript rather than being rewound: it
+  // is the visitor's evidence something went wrong, and re-sending is a fresh
+  // request either way — the server kept nothing from the failed turn.
   const handleRetry = useCallback(() => {
     const lastUserMessage = messages.findLast(
       (message: UIMessage) => message.role === "user",
@@ -486,140 +790,201 @@ export function AiChatbotDemo() {
     handleSend(text);
   }, [handleSend, messages, pushEntry]);
 
-  const applyDeferralOutcome = useCallback(
-    (
-      toolCallId: string,
-      outcome: Awaited<ReturnType<typeof resolveApproval>>,
-      onResumed?: () => void,
-    ) => {
-      setResolvingCallId(null);
-
-      if (isDeferralFailure(outcome)) {
-        // A 409 means the answer can never land, so stop offering it.
-        if (outcome.status === 409) {
-          setPendingCalls((current) =>
-            current.filter((call) => call.toolCallId !== toolCallId),
-          );
-        }
-        pushEntry(
-          "error",
-          "deferral.failed",
-          failureMessage(
-            DEFERRAL_FAILURE_MESSAGE,
-            outcome.status,
-            outcome.detail,
-          ),
-        );
+  const reloadSessionSources = useCallback(() => {
+    void fetchSessionSources().then((restored) => {
+      if (!restored) {
+        pushEntry("error", "sources.reload_failed");
         return;
       }
+      setSources((current) => mergeRestoredSources(current, restored));
+      pushEntry(
+        "info",
+        "sources.reloaded",
+        `${restored.length} source(s) in the session`,
+      );
+    });
+  }, [pushEntry]);
 
-      const resolved: DeferralResult = outcome;
-      setPendingCalls(resolved.pendingCalls);
-
-      // Neither endpoint streams, and `useChat` never saw the request.
-      setMessages((current) => [
-        ...current,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          parts: [{ type: "text", text: resolved.response }],
-        },
-      ]);
-
-      if (resolved.pendingCalls.length === 0) {
-        onResumed?.();
-      }
-    },
-    [pushEntry, setMessages],
-  );
+  const removePendingCall = useCallback((callId: string) => {
+    setPendingCalls((current) => current.filter((call) => call.id !== callId));
+  }, []);
 
   const handleApprovalDecision = useCallback(
-    (toolCallId: string, approved: boolean) => {
-      const call = pendingCalls.find(
-        (pending) => pending.toolCallId === toolCallId,
-      );
-      if (!call) {
+    (actionId: string, decision: ApprovalDecision) => {
+      const call = pendingCalls.find((pending) => pending.id === actionId);
+      if (!call || call.kind !== "approval") {
         return;
       }
-      setResolvingCallId(toolCallId);
+      setResolvingCallId(actionId);
+      setActionFailureMessage(undefined);
       pushEntry(
         "tool",
-        approved ? "approval.confirmed" : "approval.declined",
-        `${call.toolName} · ${toolCallId}`,
+        decision === "approve" ? "approval.confirmed" : "approval.declined",
+        `${call.toolName} · ${actionId}`,
       );
 
-      void resolveApproval(sessionId, toolCallId, approved).then((outcome) => {
-        applyDeferralOutcome(toolCallId, outcome, () => {
-          if (approved && call.toolName === "clear_knowledge_base") {
-            setSources([]);
-            setActiveSourceLabels([]);
-            pushEntry("info", "knowledge.cleared", "by approved tool call");
+      void resolveApproval(actionId, decision).then((outcome) => {
+        setResolvingCallId(null);
+
+        if (isZizaFailure(outcome)) {
+          if (isSpentDecision(outcome)) {
+            removePendingCall(actionId);
           }
-        });
+          const message = describeFailure(outcome);
+          setActionFailureMessage(message);
+          pushEntry("error", "approval.failed", message);
+          return;
+        }
+
+        removePendingCall(actionId);
+        const nextApproval = outcome.approvalRequired;
+        if (nextApproval) {
+          setPendingCalls((current) => [...current, nextApproval]);
+          pushEntry(
+            "tool",
+            "approval.required",
+            `${nextApproval.toolName} · ${nextApproval.id}`,
+          );
+        }
+
+        // The resumed turn did not go through `useChat`, so it is added here.
+        setMessages((current) => [
+          ...current,
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            parts: [
+              { type: "text", text: outcome.text },
+              ...(outcome.citations.length > 0
+                ? [
+                    {
+                      type: CITATIONS_PART_TYPE,
+                      data: outcome.citations,
+                    } as const,
+                  ]
+                : []),
+            ],
+          },
+        ]);
+        setSuggestions(outcome.followUps);
+        setActiveSourceIds(citedSourceIds(outcome.citations));
+        if (outcome.failure) {
+          const message = describeFailure({
+            httpStatus: 0,
+            code: outcome.failure.code,
+            message: outcome.failure.message,
+          });
+          setStreamFailure({ message });
+          pushEntry("error", "approval.turn_failed", message);
+        }
+
+        // Only now has the tool actually run, and what it did is ziza's to
+        // say, so the panel is re-read rather than assumed empty.
+        if (decision === "approve") {
+          reloadSessionSources();
+        }
       });
     },
-    [applyDeferralOutcome, pendingCalls, pushEntry, sessionId],
+    [
+      pendingCalls,
+      pushEntry,
+      reloadSessionSources,
+      removePendingCall,
+      setMessages,
+    ],
   );
 
   const handleLinkSelection = useCallback(
-    (toolCallId: string, selectedLinks: readonly string[]) => {
-      const call = pendingCalls.find(
-        (pending) => pending.toolCallId === toolCallId,
-      );
-      if (!call || call.kind !== "call") {
+    (offerId: string, selectedLinks: readonly string[]) => {
+      const offer = pendingCalls.find((pending) => pending.id === offerId);
+      if (!offer || offer.kind !== "link_offer") {
         return;
       }
-      setResolvingCallId(toolCallId);
+      setResolvingCallId(offerId);
+      setActionFailureMessage(undefined);
+      const selectedUrls = [
+        offer.pageUrl,
+        ...selectedLinks.filter((url) => url !== offer.pageUrl),
+      ];
       pushEntry(
         "tool",
         "links.submitted",
-        `${call.pageUrl} + ${selectedLinks.length} link(s)`,
+        `${offer.pageUrl} + ${selectedLinks.length} link(s)`,
       );
 
-      void resolveLinkSelection(sessionId, toolCallId, selectedLinks).then(
-        (outcome) => {
-          applyDeferralOutcome(toolCallId, outcome, () => {
-            // The API exposes no way to re-read a session's documents, so
-            // rows come from what was submitted. Chunk counts stay 0 rather
-            // than invented; the panel omits a 0.
-            const indexed = [call.pageUrl, ...selectedLinks].filter(
-              (url): url is string => Boolean(url),
-            );
-            setSources((current) => [
-              ...current,
-              ...indexed.map((url) => ({
-                id: crypto.randomUUID(),
-                label: url === call.pageUrl ? (call.pageTitle ?? url) : url,
-                kind: "url" as const,
-                chunkCount: 0,
-                status: "indexed" as const,
-              })),
-            ]);
-          });
-        },
-      );
+      void resolveLinkOffer(offerId, selectedUrls).then((outcome) => {
+        setResolvingCallId(null);
+
+        if (isZizaFailure(outcome)) {
+          if (isSpentDecision(outcome)) {
+            removePendingCall(offerId);
+          }
+          const message = describeFailure(outcome);
+          setActionFailureMessage(message);
+          pushEntry("error", "links.failed", message);
+          return;
+        }
+
+        removePendingCall(offerId);
+        const titleByUrl = new Map([
+          [offer.pageUrl, offer.pageTitle],
+          ...offer.links.map((link) => [link.url, link.title] as const),
+        ]);
+        const startedAt = Date.now();
+        const addedRows: KnowledgeSource[] = outcome.added.map((added) => ({
+          id: crypto.randomUUID(),
+          jobId: added.jobId,
+          label: titleByUrl.get(added.url) ?? added.url,
+          kind: "url",
+          chunkCount: 0,
+          status: "processing",
+          startedAt,
+        }));
+        const refusedRows: KnowledgeSource[] = outcome.refused.map(
+          (refused) => ({
+            id: crypto.randomUUID(),
+            label: titleByUrl.get(refused.url) ?? refused.url,
+            kind: "url",
+            chunkCount: 0,
+            status: "failed",
+            errorDetail: describeFailure({
+              httpStatus: 0,
+              code: refused.code,
+              message: refused.message,
+            }),
+          }),
+        );
+        setSources((current) => [...current, ...addedRows, ...refusedRows]);
+        for (const row of addedRows) {
+          if (row.jobId) {
+            followJobForRow(row.id, row.label, row.jobId);
+          }
+        }
+        pushEntry(
+          outcome.refused.length > 0 ? "error" : "info",
+          "links.accepted",
+          `${outcome.added.length} added · ${outcome.refused.length} refused`,
+        );
+      });
     },
-    [applyDeferralOutcome, pendingCalls, pushEntry, sessionId],
+    [followJobForRow, pendingCalls, pushEntry, removePendingCall],
   );
 
   const handleDismissCall = useCallback(
-    (toolCallId: string) => {
-      setPendingCalls((current) =>
-        current.filter((call) => call.toolCallId !== toolCallId),
-      );
-      // A deferred call has no decline endpoint; the parked run ages out.
-      pushEntry("info", "deferral.dismissed", toolCallId);
+    (callId: string) => {
+      removePendingCall(callId);
+      pushEntry("info", "pending.dismissed", callId);
     },
-    [pushEntry],
+    [pushEntry, removePendingCall],
   );
 
   const handleAddFile = useCallback(
     (file: File) => {
-      const sourceId = crypto.randomUUID();
+      const rowId = crypto.randomUUID();
       setSources((current) => [
         ...current,
         {
-          id: sourceId,
+          id: rowId,
           label: file.name,
           kind: "file",
           chunkCount: 0,
@@ -633,148 +998,115 @@ export function AiChatbotDemo() {
         `${file.name} · ${(file.size / 1024).toFixed(0)}KB`,
       );
 
-      void ingestFile(sessionId, file).then((result) => {
-        if (isIngestFailure(result)) {
-          // A 2xx that still failed is a schema mismatch, not a rejected
-          // upload — the document is stored, so the row must not say otherwise.
-          if (result.status >= 200 && result.status < 300) {
-            setSources((current) =>
-              current.map((source) =>
-                source.id === sourceId
-                  ? { ...source, status: "indexed", startedAt: undefined }
-                  : source,
-              ),
-            );
-            pushEntry(
-              "error",
-              "knowledge.response_unreadable",
-              `${file.name}: stored (${result.status}), but the response did not match the expected shape`,
-            );
-            return;
-          }
-
-          const message = failureMessage(
-            UPLOAD_FAILURE_MESSAGE,
-            result.status,
-            result.detail,
-          );
-          setSources((current) =>
-            current.map((source) =>
-              source.id === sourceId
-                ? {
-                    ...source,
-                    status: "failed",
-                    startedAt: undefined,
-                    errorDetail: message,
-                  }
-                : source,
-            ),
-          );
+      void ingestFile(file).then((outcome) => {
+        if (isZizaFailure(outcome)) {
+          const message = describeFailure(outcome);
+          updateSource(rowId, {
+            status: "failed",
+            startedAt: undefined,
+            errorDetail: message,
+          });
           pushEntry(
             "error",
             "knowledge.upload_failed",
             `${file.name}: ${message}`,
           );
-
-          // `request()` reports 503 for a network error or timeout, where the
-          // work may have completed and only the reply was lost. Every other
-          // status is an outright refusal with nothing to recover.
-          if (result.status === 503) {
-            void fetchStarterQuestions(sessionId).then((recovered) => {
-              if (!recovered || recovered.document !== file.name) {
-                return;
-              }
-              setSources((current) =>
-                current.map((source) =>
-                  source.id === sourceId
-                    ? {
-                        ...source,
-                        status: "indexed",
-                        errorDetail: undefined,
-                      }
-                    : source,
-                ),
-              );
-              setStarterQuestions(recovered.suggestions);
-              pushEntry(
-                "info",
-                "knowledge.upload_recovered",
-                `${file.name} landed despite the lost response`,
-              );
-            });
-          }
           return;
         }
 
-        setSources((current) =>
-          current.map((source) =>
-            source.id === sourceId
-              ? {
-                  ...source,
-                  label: result.source,
-                  chunkCount: result.chunksIngested,
-                  status: result.searchable ? "indexed" : "pending-index",
-                  startedAt: undefined,
-                  imagesDescribed: result.imagesDescribed,
-                  imagesFailed: result.imagesFailed,
-                }
-              : source,
-          ),
-        );
-        setCapacity({
-          used: result.documentsUsed,
-          allowed: result.documentsAllowed,
-        });
-        setStarterQuestions(result.suggestions);
-        if (result.suggestions.length > 0) {
-          pushEntry(
-            "info",
-            "starter_questions.offered",
-            result.suggestions.map((question) => question.label).join(", "),
-          );
-        }
+        updateSource(rowId, { jobId: outcome.id, status: "processing" });
         pushEntry(
-          result.imagesFailed > 0 ? "error" : "info",
-          "knowledge.indexed",
-          `${result.source} · ${result.chunksIngested} chunks · ${result.imagesDescribed} images · ${result.documentsUsed}/${result.documentsAllowed} documents · searchable: ${result.searchable}`,
+          "info",
+          "knowledge.queued",
+          `${file.name} · job ${outcome.id}`,
         );
+        followJobForRow(rowId, file.name, outcome.id);
       });
     },
-    [pushEntry, sessionId],
+    [followJobForRow, pushEntry, updateSource],
   );
 
-  const handleClearSources = useCallback(() => {
-    void clearKnowledge(sessionId).then((deleted) => {
+  const handleRemoveSource = useCallback(
+    (source: KnowledgeSource) => {
+      const removeRow = () =>
+        setSources((current) =>
+          current.filter((existing) => existing.id !== source.id),
+        );
+      // A row that never reached ziza has nothing to delete there.
+      if (!source.sourceId) {
+        removeRow();
+        return;
+      }
+      void removeSource(source.sourceId).then((failure) => {
+        if (failure) {
+          const message = describeFailure(failure);
+          updateSource(source.id, { errorDetail: message });
+          pushEntry(
+            "error",
+            "knowledge.remove_failed",
+            `${source.label}: ${message}`,
+          );
+          return;
+        }
+        removeRow();
+        setActiveSourceIds((current) =>
+          current.filter((sourceId) => sourceId !== source.sourceId),
+        );
+        pushEntry("info", "knowledge.removed", source.label);
+      });
+    },
+    [pushEntry, updateSource],
+  );
+
+  // Ends the whole session, so the conversation goes with the documents.
+  const handleClearSession = useCallback(() => {
+    void clearZizaSession().then((failure) => {
+      if (failure) {
+        const message = describeFailure(failure);
+        setActionFailureMessage(message);
+        pushEntry("error", "session.clear_failed", message);
+        return;
+      }
+      stopFollowingAllJobs();
+      setMessages([]);
+      clearError();
       setSources([]);
-      setActiveSourceLabels([]);
-      setCapacity(null);
-      pushEntry(
-        deleted === null ? "error" : "info",
-        deleted === null ? "knowledge.clear_failed" : "knowledge.cleared",
-        deleted === null ? undefined : `${deleted} chunks deleted`,
-      );
+      setPendingCalls([]);
+      setSuggestions([]);
+      setStarterOffer(NO_STARTERS);
+      setPassages([]);
+      setActiveSourceIds([]);
+      setStreamFailure(null);
+      setActionFailureMessage(undefined);
+      nextHistoryBefore.current = null;
+      pushEntry("info", "session.cleared", "documents and chat deleted");
     });
-  }, [pushEntry, sessionId]);
+  }, [clearError, pushEntry, setMessages, stopFollowingAllJobs]);
+
+  const chatErrorMessage = error
+    ? describeFailure(readChatStreamFailure(error))
+    : undefined;
 
   const sourcesPanel = (
     <SourcesPanel
       sources={sources}
-      activeSourceLabels={activeSourceLabels}
-      isReady={isReady}
+      activeSourceIds={activeSourceIds}
+      isReady={isSessionReady}
       elapsedTick={elapsedTick}
-      capacity={capacity ?? undefined}
+      capacity={capacity}
       onAddFileAction={handleAddFile}
-      onClearAllAction={handleClearSources}
+      onRemoveSourceAction={handleRemoveSource}
+      onClearSessionAction={handleClearSession}
     />
   );
 
   const inspectorPanel = (
     <InspectorPanel
       entries={entries}
-      chunks={chunks}
+      passages={passages}
       onClearAction={() => {
         setEntries([]);
-        setChunks([]);
+        setPassages([]);
       }}
     />
   );
@@ -783,13 +1115,18 @@ export function AiChatbotDemo() {
     <ChatPanel
       turns={turns}
       isStreaming={isStreaming}
-      isReady={isReady}
-      errorMessage={error?.message}
+      isReady={isSessionReady}
+      errorMessage={
+        chatErrorMessage ?? actionFailureMessage ?? sessionFailureMessage
+      }
       pendingCalls={pendingCalls}
       suggestions={suggestions}
-      starterQuestions={starterQuestions}
+      starterQuestions={starterOffer.questions}
+      starterQuestionsOrigin={starterOffer.origin}
       resolvingCallId={resolvingCallId}
-      canRetry={streamFailed && !isStreaming}
+      slotsLeft={Math.max(0, capacity.allowed - capacity.used)}
+      streamFailureMessage={streamFailure?.message}
+      canRetry={streamFailure !== null && !isStreaming && !isRetryHeldBack}
       onRetryAction={handleRetry}
       onSendAction={handleSend}
       onLoadOlderTurnsAction={loadOlderTurns}

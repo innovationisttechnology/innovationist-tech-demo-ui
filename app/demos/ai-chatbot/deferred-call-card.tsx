@@ -3,31 +3,41 @@
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { type PendingCall } from "@/lib/ziza/ziza.types";
+import {
+  type ApprovalDecision,
+  type PendingCall,
+  type PendingLinkOffer,
+} from "@/lib/ziza/ziza.types";
 
 type DeferredCallCardProps = {
   call: PendingCall;
   isResolving: boolean;
-  onApprovalDecisionAction: (toolCallId: string, approved: boolean) => void;
+  // Document slots the session has left, if known.
+  slotsLeft?: number;
+  onApprovalDecisionAction: (
+    actionId: string,
+    decision: ApprovalDecision,
+  ) => void;
   onLinkSelectionAction: (
-    toolCallId: string,
+    offerId: string,
     selectedLinks: readonly string[],
   ) => void;
-  onDismissAction: (toolCallId: string) => void;
+  onDismissAction: (callId: string) => void;
 };
 
 /**
- * One paused tool call, rendered as the decision it is actually asking for.
+ * One thing the conversation is waiting on, rendered as the decision it is
+ * actually asking for.
  *
  * The two kinds are not variations on a theme. An `approval` is a gate — the
- * tool has not run, and Confirm re-enters its body. A `call` is deferred for
- * external execution: nothing is being permitted, the visitor is supplying the
- * input the tool needs, and the answer they give becomes its return value.
- * Rendering both as Confirm/Cancel would misdescribe the second.
+ * tool has not run, and Confirm resumes the turn with it. A `link_offer` asks
+ * nothing to be permitted: the visitor picks which pages to index. Rendering
+ * both as Confirm/Cancel would misdescribe the second.
  */
 export function DeferredCallCard({
   call,
   isResolving,
+  slotsLeft,
   onApprovalDecisionAction,
   onLinkSelectionAction,
   onDismissAction,
@@ -64,30 +74,25 @@ export function DeferredCallCard({
         {call.kind === "approval" ? "confirmation required" : "your choice"}
       </p>
 
-      <p className="font-sans text-sm break-words">
-        {call.summary ??
-          (call.kind === "approval"
-            ? "This needs your confirmation before it can run."
-            : "This needs your input before it can continue.")}
-      </p>
-
       {call.kind === "approval" ? (
         <>
-          {call.documents.length > 0 ? (
-            <ul className="text-muted-foreground space-y-0.5 font-mono text-xs break-all">
-              {call.documents.map((document) => (
-                <li key={document}>{document}</li>
-              ))}
-            </ul>
-          ) : null}
+          <p className="font-sans text-sm break-words">
+            {call.description ??
+              "This needs your confirmation before it can run."}
+          </p>
 
+          {/*
+            Cancel is an explicit decline: ziza resumes the turn with it. There
+            is deliberately no quiet dismiss here — a new message cancels the
+            action, and an unanswered one expires on its own.
+          */}
           <div className="flex flex-wrap gap-2">
             <Button
               type="button"
               size="sm"
               variant={isDestructive ? "destructive" : "default"}
               disabled={isResolving}
-              onClick={() => onApprovalDecisionAction(call.toolCallId, true)}
+              onClick={() => onApprovalDecisionAction(call.id, "approve")}
             >
               {isResolving ? "Confirming…" : "Confirm"}
             </Button>
@@ -96,7 +101,7 @@ export function DeferredCallCard({
               size="sm"
               variant="outline"
               disabled={isResolving}
-              onClick={() => onApprovalDecisionAction(call.toolCallId, false)}
+              onClick={() => onApprovalDecisionAction(call.id, "decline")}
             >
               Cancel
             </Button>
@@ -104,14 +109,13 @@ export function DeferredCallCard({
         </>
       ) : (
         <LinkSelection
-          call={call}
+          offer={call}
           isResolving={isResolving}
+          slotsLeft={slotsLeft}
           selectedLinks={selectedLinks}
           onToggleAction={toggleLink}
-          onSubmitAction={() =>
-            onLinkSelectionAction(call.toolCallId, selectedLinks)
-          }
-          onDismissAction={() => onDismissAction(call.toolCallId)}
+          onSubmitAction={() => onLinkSelectionAction(call.id, selectedLinks)}
+          onDismissAction={() => onDismissAction(call.id)}
         />
       )}
     </div>
@@ -119,8 +123,9 @@ export function DeferredCallCard({
 }
 
 type LinkSelectionProps = {
-  call: Extract<PendingCall, { kind: "call" }>;
+  offer: PendingLinkOffer;
   isResolving: boolean;
+  slotsLeft?: number;
   selectedLinks: readonly string[];
   onToggleAction: (url: string) => void;
   onSubmitAction: () => void;
@@ -128,31 +133,27 @@ type LinkSelectionProps = {
 };
 
 function LinkSelection({
-  call,
+  offer,
   isResolving,
+  slotsLeft,
   selectedLinks,
   onToggleAction,
   onSubmitAction,
   onDismissAction,
 }: LinkSelectionProps) {
-  // The server needs a page to index; without one there is no answer this card
-  // could submit, so it says so rather than offering a dead button.
-  if (!call.pageUrl) {
-    return (
-      <p className="text-muted-foreground font-mono text-xs">
-        This one can&apos;t be answered here yet.
-      </p>
-    );
-  }
-
   // Over-selecting is refused server-side against the session's remaining
   // document slots, so the limit is shown before they hit it.
   const isOverSlots =
-    call.slotsLeft !== undefined && selectedLinks.length + 1 > call.slotsLeft;
+    slotsLeft !== undefined && selectedLinks.length + 1 > slotsLeft;
 
   return (
     <>
-      {call.links.length > 0 ? (
+      <p className="font-sans text-sm break-words">
+        Index {offer.pageTitle ? <>{offer.pageTitle} </> : null}
+        <span className="font-mono text-xs break-all">{offer.pageUrl}</span>?
+      </p>
+
+      {offer.links.length > 0 ? (
         <fieldset
           className="border-border max-h-56 space-y-1.5 overflow-y-auto rounded-md border p-2"
           disabled={isResolving}
@@ -160,7 +161,7 @@ function LinkSelection({
           <legend className="text-muted-foreground px-1 font-mono text-[0.625rem] tracking-widest uppercase">
             also index
           </legend>
-          {call.links.map((link) => (
+          {offer.links.map((link) => (
             <label
               key={link.url}
               className="hover:bg-muted flex cursor-pointer items-start gap-2 rounded px-1 py-1"
@@ -173,7 +174,7 @@ function LinkSelection({
               />
               <span className="min-w-0 flex-1">
                 <span className="block truncate font-sans text-xs">
-                  {link.text || link.url}
+                  {link.title || link.url}
                 </span>
                 <span className="text-muted-foreground block truncate font-mono text-[0.625rem]">
                   {link.url}
@@ -186,7 +187,7 @@ function LinkSelection({
 
       {isOverSlots ? (
         <p className="text-destructive font-mono text-xs">
-          Only {call.slotsLeft} slot(s) left in this session, page included.
+          Only {slotsLeft} slot(s) left in this session, page included.
         </p>
       ) : null}
 
@@ -204,9 +205,8 @@ function LinkSelection({
               : `Index the page + ${selectedLinks.length} link(s)`}
         </Button>
         {/*
-          There is no decline endpoint for a deferred call — walking away is
-          the decline path — so this only clears the card. The run stays parked
-          server-side until it ages out.
+          An offer has no decline: walking away is the decline, so this only
+          clears the card and the offer expires on its own.
         */}
         <Button
           type="button"
