@@ -15,6 +15,30 @@ jobs:
       contents: read
       packages: write
     steps:
+      - name: Check required secrets
+        if: github.ref_name == 'main'
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+          NEXT_PUBLIC_API_BASE_URL: ${{ secrets.NEXT_PUBLIC_API_BASE_URL }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          ZIZA_API_URL: ${{ secrets.ZIZA_API_URL }}
+          ZIZA_DEMO_SERVER_SECRET: ${{ secrets.ZIZA_DEMO_SERVER_SECRET }}
+        run: |
+          missing=""
+          for name in DOCKER_USERNAME DOCKER_PASSWORD NEXT_PUBLIC_API_BASE_URL \
+            EC2_HOST EC2_USER EC2_SSH_KEY ZIZA_API_URL ZIZA_DEMO_SERVER_SECRET; do
+            if [ -z "${!name}" ]; then
+              missing="$missing $name"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Required secrets are empty:$missing"
+            exit 1
+          fi
+
       - name: Checkout code
         uses: actions/checkout@v7
 
@@ -59,10 +83,17 @@ jobs:
     steps:
       - name: Deploy on EC2 (pull + restart container)
         uses: appleboy/ssh-action@v1.2.5
+        # Exported into the remote shell by `envs`, then handed to the
+        # container by name, so no value appears in the script or `ps`.
+        env:
+          ZIZA_API_URL: ${{ secrets.ZIZA_API_URL }}
+          ZIZA_DEMO_SERVER_SECRET: ${{ secrets.ZIZA_DEMO_SERVER_SECRET }}
+          ZIZA_CLIENT_IP_HEADER: ${{ secrets.ZIZA_CLIENT_IP_HEADER }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
+          envs: ZIZA_API_URL,ZIZA_DEMO_SERVER_SECRET,ZIZA_CLIENT_IP_HEADER
           script: |
             set -e
             IMAGE="${{ secrets.DOCKER_USERNAME }}/innovationist-tech-demo-ui:latest"
@@ -73,6 +104,13 @@ jobs:
 
             docker pull "$IMAGE"
 
+            # Optional: unset means the BFF's default (x-real-ip). Passed only
+            # when set, since an empty value would replace that default.
+            set --
+            if [ -n "$ZIZA_CLIENT_IP_HEADER" ]; then
+              set -- -e ZIZA_CLIENT_IP_HEADER
+            fi
+
             docker stop "$CONTAINER" || true
             docker rm "$CONTAINER" || true
 
@@ -81,8 +119,9 @@ jobs:
               --restart unless-stopped \
               -p 3001:3001 \
               --add-host=host.docker.internal:host-gateway \
-              -e NODE_ENV=production \
-              -e ZIZA_API_ORIGIN="http://host.docker.internal:8181" \
+              -e ZIZA_API_URL \
+              -e ZIZA_DEMO_SERVER_SECRET \
+              "$@" \
               "$IMAGE"
 
             # Wait for the container to report healthy/running; roll back is manual but
